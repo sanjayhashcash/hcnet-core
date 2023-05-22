@@ -14,6 +14,7 @@
 #include "test/TestUtils.h"
 #include "test/test.h"
 
+#include "catchup/CatchupManagerImpl.h"
 #include "crypto/SHA.h"
 #include "database/Database.h"
 #include "herder/HerderUtils.h"
@@ -1999,8 +2000,7 @@ TEST_CASE("generalized tx set applied to ledger", "[herder][txset]")
             {std::make_pair(
                 1000, std::vector<TransactionFrameBasePtr>{addTx(3, 3500),
                                                            addTx(2, 5000)})},
-            app->getNetworkID(),
-            app->getLedgerManager().getLastClosedLedgerHeader().hash);
+            *app, app->getLedgerManager().getLastClosedLedgerHeader().hash);
         checkFees(txSet, {3000, 2000});
     }
     SECTION("single non-discounted component")
@@ -2009,8 +2009,7 @@ TEST_CASE("generalized tx set applied to ledger", "[herder][txset]")
             {std::make_pair(std::nullopt,
                             std::vector<TransactionFrameBasePtr>{
                                 addTx(3, 3500), addTx(2, 5000)})},
-            app->getNetworkID(),
-            app->getLedgerManager().getLastClosedLedgerHeader().hash);
+            *app, app->getLedgerManager().getLastClosedLedgerHeader().hash);
         checkFees(txSet, {3500, 5000});
     }
     SECTION("multiple components")
@@ -2032,7 +2031,7 @@ TEST_CASE("generalized tx set applied to ledger", "[herder][txset]")
                                std::vector<TransactionFrameBasePtr>{
                                    addTx(5, 35000), addTx(1, 10000)})};
         auto txSet = testtxset::makeNonValidatedGeneralizedTxSet(
-            components, app->getNetworkID(),
+            components, *app,
             app->getLedgerManager().getLastClosedLedgerHeader().hash);
         checkFees(txSet, {3000, 2000, 500, 2500, 8000, 35000, 10000});
     }
@@ -2339,7 +2338,7 @@ testSCPDriver(uint32 protocolVersion, uint32_t maxTxSetSize, size_t expectedOps)
             sig.clear();
             tx->addSignature(root.getSecretKey());
             auto txSet = testtxset::makeNonValidatedTxSetBasedOnLedgerVersion(
-                protocolVersion, {tx}, app->getNetworkID(),
+                protocolVersion, {tx}, *app,
                 app->getLedgerManager().getLastClosedLedgerHeader().hash);
 
             // Build a HcnetValue containing the transaction set we just
@@ -2449,8 +2448,7 @@ testSCPDriver(uint32 protocolVersion, uint32_t maxTxSetSize, size_t expectedOps)
                             .txsMaybeDiscountedFee()
                             .txs;
             std::swap(txs[0], txs[1]);
-            malformedTxSet =
-                TxSetFrame::makeFromWire(app->getNetworkID(), xdrTxSet);
+            malformedTxSet = TxSetFrame::makeFromWire(*app, xdrTxSet);
         }
         else
         {
@@ -2458,8 +2456,7 @@ testSCPDriver(uint32 protocolVersion, uint32_t maxTxSetSize, size_t expectedOps)
             transactions1->toXDR(xdrTxSet);
             auto& txs = xdrTxSet.txs;
             std::swap(txs[0], txs[1]);
-            malformedTxSet =
-                TxSetFrame::makeFromWire(app->getNetworkID(), xdrTxSet);
+            malformedTxSet = TxSetFrame::makeFromWire(*app, xdrTxSet);
         }
         auto malformedTxSetPair = makeTxPair(herder, malformedTxSet, 10);
         auto malformedTxSetEnvelope =
@@ -2929,6 +2926,302 @@ TEST_CASE("SCP State", "[herder][acceptance]")
         checkTxSetHashesPersisted(app, std::nullopt);
     }
 }
+
+TEST_CASE("SCP checkpoint", "[catchup][herder]")
+{
+    auto networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
+    auto simulation =
+        std::make_shared<Simulation>(Simulation::OVER_LOOPBACK, networkID);
+
+    SIMULATION_CREATE_NODE(0);
+    SIMULATION_CREATE_NODE(1);
+
+    SCPQuorumSet qSet;
+    qSet.threshold = 1;
+    qSet.validators.push_back(v0NodeID);
+
+    Config cfg1 = getTestConfig(1);
+    Config cfg2 = getTestConfig(2);
+    cfg2.FORCE_SCP = false;
+    cfg2.MODE_DOES_CATCHUP = true;
+    cfg1.MODE_DOES_CATCHUP = false;
+
+    auto mainNode = simulation->addNode(v0SecretKey, qSet, &cfg1);
+    simulation->startAllNodes();
+    auto& hm = mainNode->getHistoryManager();
+    auto firstCheckpoint = hm.firstLedgerAfterCheckpointContaining(1);
+
+    // Crank until we are halfway through the second checkpoint
+    simulation->crankUntil(
+        [&]() {
+            return simulation->haveAllExternalized(firstCheckpoint + 32, 1);
+        },
+        2 * (firstCheckpoint + 32) * Herder::EXP_LEDGER_TIMESPAN_SECONDS,
+        false);
+
+    SECTION("GC old checkpoints")
+    {
+        HerderImpl& herder = static_cast<HerderImpl&>(mainNode->getHerder());
+
+        // Should have MAX_SLOTS_TO_REMEMBER slots + checkpoint slot
+        REQUIRE(herder.getSCP().getKnownSlotsCount() ==
+                mainNode->getConfig().MAX_SLOTS_TO_REMEMBER + 1);
+
+        auto secondCheckpoint =
+            hm.firstLedgerAfterCheckpointContaining(firstCheckpoint);
+
+        // Crank until we complete the 2nd checkpoint
+        simulation->crankUntil(
+            [&]() {
+                return simulation->haveAllExternalized(secondCheckpoint, 1);
+            },
+            2 * 32 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
+
+        REQUIRE(mainNode->getLedgerManager().getLastClosedLedgerNum() ==
+                secondCheckpoint);
+
+        // Checkpoint is within [lcl, lcl - MAX_SLOTS_TO_REMEMBER], so we
+        // should only have MAX_SLOTS_TO_REMEMBER slots
+        REQUIRE(herder.getSCP().getKnownSlotsCount() ==
+                mainNode->getConfig().MAX_SLOTS_TO_REMEMBER);
+    }
+
+    SECTION("Out of sync node receives checkpoint")
+    {
+        // Start out of sync node
+        auto outOfSync = simulation->addNode(v1SecretKey, qSet, &cfg2);
+        simulation->addPendingConnection(v0NodeID, v1NodeID);
+        simulation->startAllNodes();
+        auto& cm =
+            static_cast<CatchupManagerImpl&>(outOfSync->getCatchupManager());
+
+        // Crank until outOfSync node has recieved checkpoint ledger and started
+        // catchup
+        auto f = [&]() {
+            simulation->crankUntil(
+                [&]() {
+                    return cm.isCatchupInitialized() &&
+                           cm.getCatchupWorkState() ==
+                               BasicWork::State::WORK_RUNNING;
+                },
+                2 * Herder::SEND_LATEST_CHECKPOINT_DELAY, false);
+        };
+
+        // History archves have not been configured, so this should throw once
+        // catchup starts
+        REQUIRE_THROWS_WITH(f(), "No GET-enabled history archive in config");
+
+        auto const& bufferedLedgers = cm.getBufferedLedgers();
+        REQUIRE(!bufferedLedgers.empty());
+        REQUIRE(bufferedLedgers.begin()->first == firstCheckpoint);
+        REQUIRE(bufferedLedgers.crbegin()->first ==
+                mainNode->getLedgerManager().getLastClosedLedgerNum());
+    }
+}
+
+// This test confirms that tx set processing and consensus are independent of
+// the tx queue source account limit (for now)
+TEST_CASE("tx queue source account limit", "[herder][transactionqueue]")
+{
+    std::shared_ptr<Simulation> simulation;
+    std::shared_ptr<Application> app;
+
+    auto setup = [&](bool mix) {
+        auto networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
+        simulation = std::make_shared<Simulation>(
+            Simulation::OVER_LOOPBACK, networkID, [mix](int i) {
+                auto cfg = getTestConfig(i, Config::TESTDB_ON_DISK_SQLITE);
+                if (!mix || i % 2 == 1)
+                {
+                    cfg.LIMIT_TX_QUEUE_SOURCE_ACCOUNT = true;
+                }
+                return cfg;
+            });
+
+        auto validatorAKey = SecretKey::fromSeed(sha256("validator-A"));
+        auto validatorBKey = SecretKey::fromSeed(sha256("validator-B"));
+        auto validatorCKey = SecretKey::fromSeed(sha256("validator-C"));
+
+        SCPQuorumSet qset;
+        // Everyone needs to vote to proceed
+        qset.threshold = 3;
+        qset.validators.push_back(validatorAKey.getPublicKey());
+        qset.validators.push_back(validatorBKey.getPublicKey());
+        qset.validators.push_back(validatorCKey.getPublicKey());
+
+        simulation->addNode(validatorAKey, qset);
+        app = simulation->addNode(validatorBKey, qset);
+        simulation->addNode(validatorCKey, qset);
+
+        simulation->addPendingConnection(validatorAKey.getPublicKey(),
+                                         validatorCKey.getPublicKey());
+        simulation->addPendingConnection(validatorAKey.getPublicKey(),
+                                         validatorBKey.getPublicKey());
+        simulation->startAllNodes();
+
+        // ValidatorB (with limits disabled) is the nomination leader
+        auto lookup = [valBKey =
+                           validatorBKey.getPublicKey()](NodeID const& n) {
+            return (n == valBKey) ? 1000 : 1;
+        };
+        for (auto const& n : simulation->getNodes())
+        {
+            HerderImpl& herder = *static_cast<HerderImpl*>(&n->getHerder());
+            herder.getHerderSCPDriver().setPriorityLookup(lookup);
+        }
+    };
+
+    auto makeTxs = [&](Application::pointer app) {
+        auto const minBalance2 = app->getLedgerManager().getLastMinBalance(2);
+        auto root = TestAccount::createRoot(*app);
+        auto a1 = TestAccount{*app, getAccount("A")};
+        auto b1 = TestAccount{*app, getAccount("B")};
+
+        auto tx1 = root.tx({createAccount(a1, minBalance2)});
+        auto tx2 = root.tx({createAccount(b1, minBalance2)});
+
+        return std::make_tuple(root, a1, b1, tx1, tx2);
+    };
+
+    SECTION("mixed")
+    {
+        setup(true);
+
+        auto [root, a1, b1, tx1, tx2] = makeTxs(app);
+
+        // Submit txs for the same account, should be good
+        REQUIRE(app->getHerder().recvTransaction(tx1, true) ==
+                TransactionQueue::AddResult::ADD_STATUS_PENDING);
+        REQUIRE(app->getHerder().recvTransaction(tx2, true) ==
+                TransactionQueue::AddResult::ADD_STATUS_PENDING);
+
+        uint32_t lcl = app->getLedgerManager().getLastClosedLedgerNum();
+        simulation->crankUntil(
+            [&]() {
+                return app->getLedgerManager().getLastClosedLedgerNum() >=
+                       lcl + 2;
+            },
+            3 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
+
+        for (auto const& node : simulation->getNodes())
+        {
+            // Applied txs were removed and banned
+            REQUIRE(node->getHerder().getTx(tx1->getFullHash()) == nullptr);
+            REQUIRE(node->getHerder().getTx(tx2->getFullHash()) == nullptr);
+            REQUIRE(node->getHerder().isBannedTx(tx1->getFullHash()));
+            REQUIRE(node->getHerder().isBannedTx(tx2->getFullHash()));
+            // Both accounts are in the ledger
+            LedgerTxn ltx(node->getLedgerTxnRoot());
+            auto acc1 = hcnet::loadAccount(ltx, a1.getPublicKey());
+            auto acc2 = hcnet::loadAccount(ltx, b1.getPublicKey());
+            REQUIRE(acc1);
+            REQUIRE(acc2);
+            REQUIRE(acc1.current().lastModifiedLedgerSeq ==
+                    acc2.current().lastModifiedLedgerSeq);
+        }
+    }
+    SECTION("all limited")
+    {
+        setup(false);
+
+        auto [root, a1, b1, tx1, tx2] = makeTxs(app);
+
+        // Submit txs for the same account, should be good
+        REQUIRE(app->getHerder().recvTransaction(tx1, true) ==
+                TransactionQueue::AddResult::ADD_STATUS_PENDING);
+
+        // Second tx is rejected due to limit
+        REQUIRE(app->getHerder().recvTransaction(tx2, true) ==
+                TransactionQueue::AddResult::ADD_STATUS_TRY_AGAIN_LATER);
+
+        uint32_t lcl = app->getLedgerManager().getLastClosedLedgerNum();
+        simulation->crankUntil(
+            [&]() {
+                return app->getLedgerManager().getLastClosedLedgerNum() >=
+                       lcl + 2;
+            },
+            3 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
+
+        for (auto const& node : simulation->getNodes())
+        {
+            // Applied txs were removed and banned
+            REQUIRE(node->getHerder().getTx(tx1->getFullHash()) == nullptr);
+            REQUIRE(node->getHerder().getTx(tx2->getFullHash()) == nullptr);
+            REQUIRE(node->getHerder().isBannedTx(tx1->getFullHash()));
+            // Second tx is not banned because it's never been flooded and
+            // applied
+            REQUIRE(!node->getHerder().isBannedTx(tx2->getFullHash()));
+            // Only first account is in the ledger
+            LedgerTxn ltx(node->getLedgerTxnRoot());
+            REQUIRE(hcnet::loadAccount(ltx, a1.getPublicKey()));
+            REQUIRE(!hcnet::loadAccount(ltx, b1.getPublicKey()));
+        }
+
+        // Now submit the second tx (which was rejected earlier) and make sure
+        // it ends up in the ledger
+        REQUIRE(app->getHerder().recvTransaction(tx2, true) ==
+                TransactionQueue::AddResult::ADD_STATUS_PENDING);
+
+        lcl = app->getLedgerManager().getLastClosedLedgerNum();
+        simulation->crankUntil(
+            [&]() {
+                return app->getLedgerManager().getLastClosedLedgerNum() >=
+                       lcl + 2;
+            },
+            3 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
+
+        for (auto const& node : simulation->getNodes())
+        {
+            // Applied tx was removed and banned
+            REQUIRE(node->getHerder().getTx(tx2->getFullHash()) == nullptr);
+            REQUIRE(node->getHerder().isBannedTx(tx2->getFullHash()));
+            // Both accounts are in the ledger
+            LedgerTxn ltx(node->getLedgerTxnRoot());
+            REQUIRE(hcnet::loadAccount(ltx, a1.getPublicKey()));
+            REQUIRE(hcnet::loadAccount(ltx, b1.getPublicKey()));
+        }
+    }
+}
+
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+TEST_CASE("soroban txs accepted by the network",
+          "[herder][soroban][transactionqueue]")
+{
+    auto networkID = sha256(getTestConfig().NETWORK_PASSPHRASE);
+    auto simulation = Topologies::core(
+        4, 0.75, Simulation::OVER_LOOPBACK, networkID, [](int i) {
+            auto cfg = getTestConfig(i, Config::TESTDB_ON_DISK_SQLITE);
+            return cfg;
+        });
+    simulation->startAllNodes();
+    auto nodes = simulation->getNodes();
+    auto& loadGen = nodes[0]->getLoadGenerator();
+
+    // Generate some accounts
+    auto& loadGenDone =
+        nodes[0]->getMetrics().NewMeter({"loadgen", "run", "complete"}, "run");
+    auto currLoadGenCount = loadGenDone.count();
+    loadGen.generateLoad(GeneratedLoadConfig::createAccountsLoad(
+        /* nAccounts */ 10, /* txRate */ 1, /* batchSize */ 1));
+    simulation->crankUntil(
+        [&]() { return loadGenDone.count() > currLoadGenCount; },
+        10 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
+
+    currLoadGenCount = loadGenDone.count();
+    // Now generate soroban txs.
+    loadGen.generateLoad(GeneratedLoadConfig::txLoad(
+        LoadGenMode::SOROBAN, /* nAccounts */ 10,
+        /* nTxs */ 30, /* txRate */ 1, /* batchSize */ 1));
+
+    std::optional<uint32_t> upgradeLedger;
+    simulation->crankUntil(
+        [&]() { return loadGenDone.count() > currLoadGenCount; },
+        10 * Herder::EXP_LEDGER_TIMESPAN_SECONDS, false);
+    auto& loadGenFailed =
+        nodes[0]->getMetrics().NewMeter({"loadgen", "run", "failed"}, "run");
+    REQUIRE(loadGenFailed.count() == 0);
+}
+#endif
 
 static void
 checkSynced(Application& app)

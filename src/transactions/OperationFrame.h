@@ -6,6 +6,7 @@
 
 #include "ledger/LedgerHashUtils.h"
 #include "ledger/LedgerManager.h"
+#include "ledger/NetworkConfig.h"
 #include "overlay/HcnetXDR.h"
 #include "util/types.h"
 #include <medida/metrics_registry.h>
@@ -40,9 +41,11 @@ class OperationFrame
     TransactionFrame& mParentTx;
     OperationResult& mResult;
 
+    virtual bool doCheckValid(SorobanNetworkConfig const& config,
+                              uint32_t ledgerVersion);
     virtual bool doCheckValid(uint32_t ledgerVersion) = 0;
-    virtual bool doApply(AbstractLedgerTxn& ltx, Config const& cfg,
-                         medida::MetricsRegistry& metrics);
+
+    virtual bool doApply(Application& app, AbstractLedgerTxn& ltx);
     virtual bool doApply(AbstractLedgerTxn& ltx) = 0;
 
     // returns the threshold this operation requires
@@ -81,11 +84,11 @@ class OperationFrame
     }
     OperationResultCode getResultCode() const;
 
-    bool checkValid(SignatureChecker& signatureChecker,
+    bool checkValid(Application& app, SignatureChecker& signatureChecker,
                     AbstractLedgerTxn& ltxOuter, bool forApply);
 
-    bool apply(SignatureChecker& signatureChecker, AbstractLedgerTxn& ltx,
-               Config const& cfg, medida::MetricsRegistry& metrics);
+    bool apply(Application& app, SignatureChecker& signatureChecker,
+               AbstractLedgerTxn& ltx);
 
     Operation const&
     getOperation() const
@@ -97,5 +100,7 @@ class OperationFrame
     insertLedgerKeysToPrefetch(UnorderedSet<LedgerKey>& keys) const;
 
     virtual bool isDexOperation() const;
+
+    virtual bool isSoroban() const;
 };
 }

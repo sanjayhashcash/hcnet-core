@@ -5,6 +5,8 @@
 // clang-format off
 // This needs to be included first
 #include "util/GlobalChecks.h"
+#include "xdr/Hcnet-ledger-entries.h"
+#include <cstdint>
 #include <json/json.h>
 #include <medida/metrics_registry.h>
 #include <xdrpp/types.h>
@@ -24,12 +26,21 @@
 #include "ledger/LedgerTxnEntry.h"
 #include "rust/RustBridge.h"
 #include "transactions/InvokeHostFunctionOpFrame.h"
+#include <crypto/SHA.h>
 
 namespace hcnet
 {
 
+template <typename T>
+CxxBuf
+toCxxBuf(T const& t)
+{
+    return CxxBuf{std::make_unique<std::vector<uint8_t>>(toVec(t))};
+}
+
 CxxLedgerInfo
-getLedgerInfo(AbstractLedgerTxn& ltx, Config const& cfg)
+getLedgerInfo(AbstractLedgerTxn& ltx, Config const& cfg,
+              SorobanNetworkConfig const& sorobanConfig)
 {
     CxxLedgerInfo info;
     auto const& hdr = ltx.loadHeader().current();
@@ -37,11 +48,35 @@ getLedgerInfo(AbstractLedgerTxn& ltx, Config const& cfg)
     info.protocol_version = hdr.ledgerVersion;
     info.sequence_number = hdr.ledgerSeq;
     info.timestamp = hdr.scpValue.closeTime;
-    for (auto c : cfg.NETWORK_PASSPHRASE)
+    info.memory_limit = sorobanConfig.txMemoryLimit();
+    info.cpu_cost_params = toCxxBuf(sorobanConfig.cpuCostParams());
+    info.mem_cost_params = toCxxBuf(sorobanConfig.memCostParams());
+    // TODO: move network id to config to not recompute hash
+    auto networkID = sha256(cfg.NETWORK_PASSPHRASE);
+    for (auto c : networkID)
     {
-        info.network_passphrase.push_back(static_cast<unsigned char>(c));
+        info.network_id.push_back(static_cast<unsigned char>(c));
     }
     return info;
+}
+
+bool
+validateContractLedgerEntry(LedgerEntry const& le, size_t nByte,
+                            SorobanNetworkConfig const& config)
+{
+    // check contract code size limit
+    if (le.data.type() == CONTRACT_CODE &&
+        config.maxContractSizeBytes() < le.data.contractCode().code.size())
+    {
+        return false;
+    }
+    // check contract data entry size limit
+    if (le.data.type() == CONTRACT_DATA &&
+        config.maxContractDataEntrySizeBytes() < nByte)
+    {
+        return false;
+    }
+    return true;
 }
 
 template <typename T>
@@ -49,13 +84,6 @@ std::vector<uint8_t>
 toVec(T const& t)
 {
     return std::vector<uint8_t>(xdr::xdr_to_opaque(t));
-}
-
-template <typename T>
-CxxBuf
-toCxxBuf(T const& t)
-{
-    return CxxBuf{std::make_unique<std::vector<uint8_t>>(toVec(t))};
 }
 
 InvokeHostFunctionOpFrame::InvokeHostFunctionOpFrame(Operation const& op,
@@ -84,15 +112,32 @@ InvokeHostFunctionOpFrame::doApply(AbstractLedgerTxn& ltx)
     throw std::runtime_error("InvokeHostFunctionOpFrame::doApply needs Config");
 }
 
+void
+InvokeHostFunctionOpFrame::maybePopulateDiagnosticEvents(
+    Config const& cfg, InvokeHostFunctionOutput const& output)
+{
+    if (cfg.ENABLE_SOROBAN_DIAGNOSTIC_EVENTS)
+    {
+        OperationDiagnosticEvents diagnosticEvents;
+        for (auto const& e : output.diagnostic_events)
+        {
+            DiagnosticEvent evt;
+            xdr::xdr_from_opaque(e.data, evt);
+            diagnosticEvents.events.emplace_back(evt);
+        }
+        mParentTx.pushDiagnosticEvents(diagnosticEvents);
+    }
+}
+
 struct HostFunctionMetrics
 {
     medida::MetricsRegistry& mMetrics;
 
-    bool mPreflight{false};
-    char const* mFnType{nullptr};
-
     size_t mReadEntry{0};
     size_t mWriteEntry{0};
+
+    size_t mLedgerReadByte{0};
+    size_t mLedgerWriteByte{0};
 
     size_t mReadKeyByte{0};
     size_t mWriteKeyByte{0};
@@ -111,47 +156,23 @@ struct HostFunctionMetrics
 
     bool mSuccess{false};
 
-    HostFunctionMetrics(medida::MetricsRegistry& metrics, HostFunctionType hf,
-                        bool isPreflight)
-        : mMetrics(metrics), mPreflight(isPreflight)
+    HostFunctionMetrics(medida::MetricsRegistry& metrics) : mMetrics(metrics)
     {
-        if (hf == HOST_FUNCTION_TYPE_INVOKE_CONTRACT)
-        {
-            if (isPreflight)
-            {
-                mFnType = "invoke-preflight";
-            }
-            else
-            {
-                mFnType = "invoke-contract";
-            }
-        }
-        else
-        {
-            if (isPreflight)
-            {
-                mFnType = "create-preflight";
-            }
-            else
-            {
-                mFnType = "create-contract";
-            }
-        }
     }
 
     bool
     isCodeKey(LedgerKey const& lk)
     {
-        return lk.type() == CONTRACT_DATA &&
-               lk.contractData().key.type() == SCValType::SCV_STATIC &&
-               lk.contractData().key.ic() == SCS_LEDGER_KEY_CONTRACT_CODE;
+        return lk.type() == CONTRACT_CODE;
     }
 
     void
     noteReadEntry(LedgerKey const& lk, size_t n)
     {
         mReadEntry++;
-        mReadKeyByte += xdr::xdr_size(lk);
+        auto keySize = xdr::xdr_size(lk);
+        mReadKeyByte += keySize;
+        mLedgerReadByte += keySize + n;
         if (isCodeKey(lk))
         {
             mReadCodeByte += n;
@@ -166,125 +187,188 @@ struct HostFunctionMetrics
     noteWriteEntry(LedgerKey const& lk, size_t n)
     {
         mWriteEntry++;
-        mWriteKeyByte += xdr::xdr_size(lk);
+        auto keySize = xdr::xdr_size(lk);
+        mWriteKeyByte += keySize;
+        mLedgerWriteByte += keySize + n;
         if (isCodeKey(lk))
         {
-            mReadCodeByte += n;
+            mWriteCodeByte += n;
         }
         else
         {
-            mReadDataByte += n;
+            mWriteDataByte += n;
         }
     }
 
     ~HostFunctionMetrics()
     {
-        mMetrics.NewMeter({"host-fn", mFnType, "read-entry"}, "entry")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "read-entry"}, "entry")
             .Mark(mReadEntry);
-        mMetrics.NewMeter({"host-fn", mFnType, "write-entry"}, "entry")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "write-entry"}, "entry")
             .Mark(mWriteEntry);
 
-        mMetrics.NewMeter({"host-fn", mFnType, "read-key-byte"}, "byte")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "read-key-byte"}, "byte")
             .Mark(mReadKeyByte);
-        mMetrics.NewMeter({"host-fn", mFnType, "write-key-byte"}, "byte")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "write-key-byte"}, "byte")
             .Mark(mWriteKeyByte);
 
-        mMetrics.NewMeter({"host-fn", mFnType, "read-data-byte"}, "byte")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "read-ledger-byte"}, "byte")
+            .Mark(mLedgerReadByte);
+        mMetrics.NewMeter({"soroban", "host-fn-op", "read-data-byte"}, "byte")
             .Mark(mReadDataByte);
-        mMetrics.NewMeter({"host-fn", mFnType, "read-code-byte"}, "byte")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "read-code-byte"}, "byte")
             .Mark(mReadCodeByte);
 
-        if (!mPreflight)
-        {
-            // We don't track the ledger entry bytes written during preflight as
-            // they're not actually written anywhere, just dropped on the floor.
-            mMetrics.NewMeter({"host-fn", mFnType, "write-data-byte"}, "byte")
-                .Mark(mWriteDataByte);
-            mMetrics.NewMeter({"host-fn", mFnType, "write-code-byte"}, "byte")
-                .Mark(mWriteCodeByte);
-        }
+        mMetrics
+            .NewMeter({"soroban", "host-fn-op", "write-ledger-byte"}, "byte")
+            .Mark(mLedgerWriteByte);
+        mMetrics.NewMeter({"soroban", "host-fn-op", "write-data-byte"}, "byte")
+            .Mark(mWriteDataByte);
+        mMetrics.NewMeter({"soroban", "host-fn-op", "write-code-byte"}, "byte")
+            .Mark(mWriteCodeByte);
 
-        mMetrics.NewMeter({"host-fn", mFnType, "emit-event"}, "event")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "emit-event"}, "event")
             .Mark(mEmitEvent);
-        mMetrics.NewMeter({"host-fn", mFnType, "emit-event-byte"}, "byte")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "emit-event-byte"}, "byte")
             .Mark(mEmitEventByte);
 
-        mMetrics.NewMeter({"host-fn", mFnType, "cpu-insn"}, "insn")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "cpu-insn"}, "insn")
             .Mark(mCpuInsn);
-        mMetrics.NewMeter({"host-fn", mFnType, "mem-byte"}, "byte")
+        mMetrics.NewMeter({"soroban", "host-fn-op", "mem-byte"}, "byte")
             .Mark(mMemByte);
 
         if (mSuccess)
         {
-            mMetrics.NewMeter({"host-fn", mFnType, "success"}, "call").Mark();
+            mMetrics.NewMeter({"soroban", "host-fn-op", "success"}, "call")
+                .Mark();
         }
         else
         {
-            mMetrics.NewMeter({"host-fn", mFnType, "failure"}, "call").Mark();
+            mMetrics.NewMeter({"soroban", "host-fn-op", "failure"}, "call")
+                .Mark();
         }
     }
     medida::TimerContext
     getExecTimer()
     {
-        return mMetrics.NewTimer({"host-fn", mFnType, "exec"}).TimeScope();
+        return mMetrics.NewTimer({"soroban", "host-fn-op", "exec"}).TimeScope();
     }
 };
 
 bool
-InvokeHostFunctionOpFrame::doApply(AbstractLedgerTxn& ltx, Config const& cfg,
-                                   medida::MetricsRegistry& metricsReg)
+InvokeHostFunctionOpFrame::doApply(Application& app, AbstractLedgerTxn& ltx)
 {
-    HostFunctionMetrics metrics(metricsReg, mInvokeHostFunction.function.type(),
-                                false);
+    Config const& cfg = app.getConfig();
+    HostFunctionMetrics metrics(app.getMetrics());
+    auto const& sorobanConfig =
+        app.getLedgerManager().getSorobanNetworkConfig(ltx);
 
     // Get the entries for the footprint
     rust::Vec<CxxBuf> ledgerEntryCxxBufs;
-    ledgerEntryCxxBufs.reserve(mInvokeHostFunction.footprint.readOnly.size() +
-                               mInvokeHostFunction.footprint.readWrite.size());
-    for (auto const& lk : mInvokeHostFunction.footprint.readOnly)
-    {
-        // Load without record for readOnly to avoid writing them later
-        auto ltxe = ltx.loadWithoutRecord(lk);
-        size_t nByte{0};
-        if (ltxe)
+    auto const& resources = mParentTx.sorobanResources();
+    auto const& footprint = resources.footprint;
+    ledgerEntryCxxBufs.reserve(footprint.readOnly.size() +
+                               footprint.readWrite.size());
+    auto addReads = [&ledgerEntryCxxBufs, &ltx, &metrics,
+                     &sorobanConfig](auto const& keys) -> bool {
+        for (auto const& lk : keys)
         {
-            auto buf = toCxxBuf(ltxe.current());
-            nByte = buf.data->size();
-            ledgerEntryCxxBufs.emplace_back(std::move(buf));
+            // Load without record for readOnly to avoid writing them later
+            auto ltxe = ltx.loadWithoutRecord(lk);
+            size_t nByte{0};
+            if (ltxe)
+            {
+                auto const& le = ltxe.current();
+                auto buf = toCxxBuf(le);
+                nByte = buf.data->size();
+                // Typically invalid entry read should not happen unless some
+                // backward-incompatible change happened (e.g. reducing the
+                // contract data size limit) that renders previously valid
+                // entries no longer valid.
+                if (!validateContractLedgerEntry(le, nByte, sorobanConfig))
+                {
+                    return false;
+                }
+                ledgerEntryCxxBufs.emplace_back(std::move(buf));
+            }
+            metrics.noteReadEntry(lk, nByte);
         }
-        metrics.noteReadEntry(lk, nByte);
+        return true;
+    };
+
+    if (!addReads(footprint.readWrite))
+    {
+        innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+        return false;
     }
-    for (auto const& lk : mInvokeHostFunction.footprint.readWrite)
+    // Metadata includes the ledger entry changes which we
+    // approximate as the size of the RW entries that we read
+    // plus size of the RW entries that we write back to the ledger.
+    size_t metadataSizeBytes = metrics.mLedgerReadByte;
+    if (resources.extendedMetaDataSizeBytes < metadataSizeBytes)
     {
-        auto ltxe = ltx.load(lk);
-        size_t nByte{0};
-        if (ltxe)
-        {
-            auto buf = toCxxBuf(ltxe.current());
-            nByte = buf.data->size();
-            ledgerEntryCxxBufs.emplace_back(std::move(buf));
-        }
-        metrics.noteWriteEntry(lk, nByte);
+        innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+        return false;
+    }
+
+    if (!addReads(footprint.readOnly))
+    {
+        innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+        return false;
+    }
+
+    if (resources.readBytes < metrics.mLedgerReadByte)
+    {
+        innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+        return false;
+    }
+
+    rust::Vec<CxxBuf> hostFnCxxBufs;
+    hostFnCxxBufs.reserve(mInvokeHostFunction.functions.size());
+    for (auto const& hostFn : mInvokeHostFunction.functions)
+    {
+        hostFnCxxBufs.emplace_back(toCxxBuf(hostFn));
     }
 
     InvokeHostFunctionOutput out;
     try
     {
         auto timeScope = metrics.getExecTimer();
-        out = rust_bridge::invoke_host_function(
-            toCxxBuf(mInvokeHostFunction.function),
-            toCxxBuf(mInvokeHostFunction.footprint), toCxxBuf(getSourceID()),
-            getLedgerInfo(ltx, cfg), ledgerEntryCxxBufs);
-        metrics.mSuccess = true;
+
+        out = rust_bridge::invoke_host_functions(
+            cfg.CURRENT_LEDGER_PROTOCOL_VERSION,
+            cfg.ENABLE_SOROBAN_DIAGNOSTIC_EVENTS, hostFnCxxBufs,
+            toCxxBuf(resources), toCxxBuf(getSourceID()),
+            getLedgerInfo(ltx, cfg, sorobanConfig), ledgerEntryCxxBufs);
+
+        if (out.success)
+        {
+            metrics.mSuccess = true;
+        }
+        else
+        {
+            maybePopulateDiagnosticEvents(cfg, out);
+        }
     }
     catch (std::exception&)
     {
-        innerResult().code(INVOKE_HOST_FUNCTION_TRAPPED);
-        return false;
     }
 
     metrics.mCpuInsn = out.cpu_insns;
     metrics.mMemByte = out.mem_bytes;
+    if (!metrics.mSuccess)
+    {
+        if (resources.instructions < out.cpu_insns ||
+            sorobanConfig.txMemoryLimit() < out.mem_bytes)
+        {
+            innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+        }
+        else
+        {
+            innerResult().code(INVOKE_HOST_FUNCTION_TRAPPED);
+        }
+        return false;
+    }
 
     // Create or update every entry returned
     std::unordered_set<LedgerKey> keys;
@@ -292,7 +376,19 @@ InvokeHostFunctionOpFrame::doApply(AbstractLedgerTxn& ltx, Config const& cfg,
     {
         LedgerEntry le;
         xdr::xdr_from_opaque(buf.data, le);
+        if (!validateContractLedgerEntry(le, buf.data.size(), sorobanConfig))
+        {
+            innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+            return false;
+        }
+
         auto lk = LedgerEntryKey(le);
+        metrics.noteWriteEntry(lk, buf.data.size());
+        if (resources.writeBytes < metrics.mLedgerWriteByte)
+        {
+            innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+            return false;
+        }
 
         auto ltxe = ltx.load(lk);
         if (ltxe)
@@ -306,9 +402,15 @@ InvokeHostFunctionOpFrame::doApply(AbstractLedgerTxn& ltx, Config const& cfg,
 
         keys.emplace(std::move(lk));
     }
+    metadataSizeBytes += metrics.mLedgerWriteByte;
+    if (resources.extendedMetaDataSizeBytes < metadataSizeBytes)
+    {
+        innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+        return false;
+    }
 
     // Erase every entry not returned
-    for (auto const& lk : mInvokeHostFunction.footprint.readWrite)
+    for (auto const& lk : footprint.readWrite)
     {
         if (keys.find(lk) == keys.end())
         {
@@ -322,29 +424,61 @@ InvokeHostFunctionOpFrame::doApply(AbstractLedgerTxn& ltx, Config const& cfg,
 
     // Append events to the enclosing TransactionFrame, where
     // they'll be picked up and transferred to the TxMeta.
+    OperationEvents events;
     for (auto const& buf : out.contract_events)
     {
         metrics.mEmitEvent++;
         metrics.mEmitEventByte += buf.data.size();
+        metadataSizeBytes += buf.data.size();
+        if (resources.extendedMetaDataSizeBytes < metadataSizeBytes)
+        {
+            innerResult().code(INVOKE_HOST_FUNCTION_RESOURCE_LIMIT_EXCEEDED);
+            return false;
+        }
         ContractEvent evt;
         xdr::xdr_from_opaque(buf.data, evt);
-        mParentTx.pushContractEvent(evt);
+        events.events.push_back(evt);
     }
 
+    mParentTx.pushContractEvents(events);
+
+    maybePopulateDiagnosticEvents(cfg, out);
+
     innerResult().code(INVOKE_HOST_FUNCTION_SUCCESS);
-    xdr::xdr_from_opaque(out.result_value.data, innerResult().success());
+
+    auto& results = innerResult().success();
+    results.resize(out.result_values.size());
+    for (size_t i = 0; i < results.size(); ++i)
+    {
+        xdr::xdr_from_opaque(out.result_values[i].data, results[i]);
+    }
+
+    return true;
+}
+
+bool
+InvokeHostFunctionOpFrame::doCheckValid(SorobanNetworkConfig const& config,
+                                        uint32_t ledgerVersion)
+{
+    // check wasm size if uploading contract
+    for (auto const& hostFn : mInvokeHostFunction.functions)
+    {
+        auto const& args = hostFn.args;
+        if (args.type() == HOST_FUNCTION_TYPE_UPLOAD_CONTRACT_WASM &&
+            args.uploadContractWasm().code.size() >
+                config.maxContractSizeBytes())
+        {
+            return false;
+        }
+    }
     return true;
 }
 
 bool
 InvokeHostFunctionOpFrame::doCheckValid(uint32_t ledgerVersion)
 {
-    if (mParentTx.getNumOperations() > 1)
-    {
-        innerResult().code(INVOKE_HOST_FUNCTION_MALFORMED);
-        return false;
-    }
-    return true;
+    throw std::runtime_error(
+        "InvokeHostFunctionOpFrame::doCheckValid needs Config");
 }
 
 void
@@ -353,97 +487,10 @@ InvokeHostFunctionOpFrame::insertLedgerKeysToPrefetch(
 {
 }
 
-CxxBuf
-PreflightCallbacks::get_ledger_entry(rust::Vec<uint8_t> const& key)
-{
-    LedgerKey lk;
-    xdr::xdr_from_opaque(key, lk);
-    LedgerTxn ltx(mApp.getLedgerTxnRoot());
-    auto lte = ltx.load(lk);
-    if (lte)
-    {
-        auto buf = toCxxBuf(lte.current());
-        mMetrics.noteReadEntry(lk, buf.data->size());
-        return buf;
-    }
-    else
-    {
-        throw std::runtime_error("missing key for get");
-    }
-}
 bool
-PreflightCallbacks::has_ledger_entry(rust::Vec<uint8_t> const& key)
+InvokeHostFunctionOpFrame::isSoroban() const
 {
-    LedgerKey lk;
-    xdr::xdr_from_opaque(key, lk);
-    LedgerTxn ltx(mApp.getLedgerTxnRoot());
-    auto lte = ltx.load(lk);
-    mMetrics.noteReadEntry(lk, lte ? xdr::xdr_size(lte.current()) : 0);
-    return (bool)lte;
+    return true;
 }
-
-Json::Value
-InvokeHostFunctionOpFrame::preflight(Application& app,
-                                     InvokeHostFunctionOp const& op,
-                                     AccountID const& sourceAccount)
-{
-    HostFunctionMetrics metrics(app.getMetrics(), op.function.type(), true);
-
-    auto cb = std::make_unique<PreflightCallbacks>(app, metrics);
-
-    Json::Value root;
-    CxxLedgerInfo li;
-
-    // Scope our use of an ltx to a block here so that a new one can be opened
-    // later in the preflight callbacks.
-    {
-        LedgerTxn ltx(app.getLedgerTxnRoot());
-        root["ledger"] = ltx.loadHeader().current().ledgerSeq;
-        li = getLedgerInfo(ltx, app.getConfig());
-    }
-
-    try
-    {
-        PreflightHostFunctionOutput out;
-        {
-            auto timeScope = metrics.getExecTimer();
-            out = rust_bridge::preflight_host_function(
-                toVec(op.function), toVec(sourceAccount), li, std::move(cb));
-            metrics.mSuccess = true;
-        }
-        SCVal result_value;
-        LedgerFootprint storage_footprint;
-        xdr::xdr_from_opaque(out.result_value.data, result_value);
-        xdr::xdr_from_opaque(out.storage_footprint.data, storage_footprint);
-        root["status"] = "OK";
-        root["result"] = toOpaqueBase64(result_value);
-        Json::Value events(Json::ValueType::arrayValue);
-        for (auto const& e : out.contract_events)
-        {
-            // TODO: possibly change this to a single XDR-array-of-events rather
-            // than a JSON array of separate XDR events; requires changing the
-            // XDR if we want to do this.
-            metrics.mEmitEvent++;
-            metrics.mEmitEventByte += e.data.size();
-            ContractEvent evt;
-            xdr::xdr_from_opaque(e.data, evt);
-            events.append(Json::Value(toOpaqueBase64(evt)));
-        }
-        root["events"] = events;
-        root["footprint"] = toOpaqueBase64(storage_footprint);
-        root["cpu_insns"] = Json::UInt64(out.cpu_insns);
-        root["mem_bytes"] = Json::UInt64(out.mem_bytes);
-
-        metrics.mCpuInsn = out.cpu_insns;
-        metrics.mMemByte = out.mem_bytes;
-    }
-    catch (std::exception& e)
-    {
-        root["status"] = "ERROR";
-        root["detail"] = e.what();
-    }
-    return root;
-}
-
 }
 #endif // ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION

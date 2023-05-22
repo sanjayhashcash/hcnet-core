@@ -7,6 +7,8 @@
 #include <optional>
 
 #include "ledger/LedgerHashUtils.h"
+#include "ledger/NetworkConfig.h"
+#include "main/Config.h"
 #include "overlay/HcnetXDR.h"
 #include "transactions/TransactionMetaFrame.h"
 #include "util/UnorderedSet.h"
@@ -35,12 +37,18 @@ class TransactionFrameBase
     virtual bool apply(Application& app, AbstractLedgerTxn& ltx,
                        TransactionMetaFrame& meta) = 0;
 
-    virtual bool checkValid(AbstractLedgerTxn& ltxOuter, SequenceNumber current,
+    virtual bool checkValid(Application& app, AbstractLedgerTxn& ltxOuter,
+                            SequenceNumber current,
                             uint64_t lowerBoundCloseTimeOffset,
                             uint64_t upperBoundCloseTimeOffset) = 0;
 
     virtual TransactionEnvelope const& getEnvelope() const = 0;
 
+    // Returns the total fee of this transaction, including the 'flat',
+    // non-market part.
+    virtual int64_t getFullFee() const = 0;
+    // Returns the part of the full fee used to make decisions as to
+    // whether this transaction should be included into ledger.
     virtual int64_t getFeeBid() const = 0;
     virtual int64_t getFee(LedgerHeader const& header,
                            std::optional<int64_t> baseFee,
@@ -72,5 +80,14 @@ class TransactionFrameBase
     virtual HcnetMessage toHcnetMessage() const = 0;
 
     virtual bool hasDexOperations() const = 0;
+
+    virtual bool isSoroban() const = 0;
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    virtual SorobanResources const& sorobanResources() const = 0;
+    virtual void
+    maybeComputeSorobanResourceFee(uint32_t protocolVersion,
+                                   SorobanNetworkConfig const& sorobanConfig,
+                                   Config const& cfg) = 0;
+#endif
 };
 }

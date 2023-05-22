@@ -188,6 +188,10 @@ class Config : public std::enable_shared_from_this<Config>
     // and should be false in all normal cases.
     bool ARTIFICIALLY_REDUCE_MERGE_COUNTS_FOR_TESTING;
 
+    // A config parameter that skips adjustment of target outbound connections
+    // based on the inbound connections.
+    bool ARTIFICIALLY_SKIP_CONNECTION_ADJUSTMENT_FOR_TESTING;
+
     // A config parameter that forces replay to use the newest bucket logic;
     // this implicitly means that replay will _not_ check bucket-list hashes
     // along the way, but rather will use the stated hashes from ledger headers
@@ -244,9 +248,6 @@ class Config : public std::enable_shared_from_this<Config>
     // processes `FLOW_CONTROL_SEND_MORE_BATCH_SIZE` messages
     uint32_t FLOW_CONTROL_SEND_MORE_BATCH_SIZE;
 
-    // Used to flood transactions lazily by first flooding their hashes.
-    bool ENABLE_PULL_MODE;
-
     // A config parameter that allows a node to generate buckets. This should
     // be set to `false` only for testing purposes.
     bool MODE_ENABLES_BUCKETLIST;
@@ -277,6 +278,14 @@ class Config : public std::enable_shared_from_this<Config>
     // index page size == 0, value ingnored and all buckets have individual key
     // index.
     size_t EXPERIMENTAL_BUCKETLIST_DB_INDEX_CUTOFF;
+
+    // When set to true, BucketListDB indexes are persisted on-disk so that the
+    // BucketList does not need to be reindexed on startup. Defaults to true.
+    // This should only be set to false for testing purposes
+    // Validators do not currently support persisted indexes. If
+    // NODE_IS_VALIDATOR=true, this value is ingnored and indexes are never
+    // persisted.
+    bool EXPERIMENTAL_BUCKETLIST_DB_PERSIST_INDEX;
 
     // A config parameter that stores historical data, such as transactions,
     // fees, and scp history in the database
@@ -315,6 +324,11 @@ class Config : public std::enable_shared_from_this<Config>
     // You might want to set this if you are running your own network and
     //  aren't concerned with byzantine failures.
     bool UNSAFE_QUORUM;
+
+    // If set to true, the node will limit its transaction queue to 1
+    // transaction per source account. This impacts which transactions the
+    // node will nominate and flood to others.
+    bool LIMIT_TX_QUEUE_SOURCE_ACCOUNT;
 
     // If set to true, bucket GC will not be performed. It can lead to massive
     // disk usage, but it is useful for recovering of nodes.
@@ -498,6 +512,15 @@ class Config : public std::enable_shared_from_this<Config>
     // The default value is false.
     bool HALT_ON_INTERNAL_TRANSACTION_ERROR;
 
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    // If set to true, env will return additional diagnostic Soroban events
+    // that are not part of the protocol. These events will be put into a list
+    // in the non-hashed portion of the meta, and this list will contain all
+    // events so ordering can be maintained between all events. The default
+    // value is false, and this should not be enabled on validators.
+    bool ENABLE_SOROBAN_DIAGNOSTIC_EVENTS;
+#endif
+
 #ifdef BUILD_TESTS
     // If set to true, the application will be aware this run is for a test
     // case.  This is used right now in the signal handler to exit() instead of
@@ -535,6 +558,7 @@ class Config : public std::enable_shared_from_this<Config>
     bool isInMemoryMode() const;
     bool isInMemoryModeWithoutMinimalDB() const;
     bool isUsingBucketListDB() const;
+    bool isPersistingBucketListDBIndexes() const;
     bool modeStoresAllHistory() const;
     bool modeStoresAnyHistory() const;
     void logBasicInfo();

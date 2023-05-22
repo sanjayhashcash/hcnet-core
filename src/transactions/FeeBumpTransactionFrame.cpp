@@ -7,6 +7,7 @@
 #include "crypto/SHA.h"
 #include "crypto/SignerKey.h"
 #include "crypto/SignerKeyUtils.h"
+#include "ledger/LedgerManager.h"
 #include "ledger/LedgerTxn.h"
 #include "ledger/LedgerTxnEntry.h"
 #include "ledger/LedgerTxnHeader.h"
@@ -39,6 +40,29 @@ FeeBumpTransactionFrame::hasDexOperations() const
 {
     return mInnerTx->hasDexOperations();
 }
+
+bool
+FeeBumpTransactionFrame::isSoroban() const
+{
+    return mInnerTx->isSoroban();
+}
+
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+SorobanResources const&
+FeeBumpTransactionFrame::sorobanResources() const
+{
+    return mInnerTx->sorobanResources();
+}
+
+void
+FeeBumpTransactionFrame::maybeComputeSorobanResourceFee(
+    uint32_t protocolVersion, SorobanNetworkConfig const& sorobanConfig,
+    Config const& cfg)
+{
+    mInnerTx->maybeComputeSorobanResourceFee(protocolVersion, sorobanConfig,
+                                             cfg);
+}
+#endif
 
 FeeBumpTransactionFrame::FeeBumpTransactionFrame(
     Hash const& networkID, TransactionEnvelope const& envelope)
@@ -149,13 +173,19 @@ FeeBumpTransactionFrame::checkSignature(SignatureChecker& signatureChecker,
 }
 
 bool
-FeeBumpTransactionFrame::checkValid(AbstractLedgerTxn& ltxOuter,
+FeeBumpTransactionFrame::checkValid(Application& app,
+                                    AbstractLedgerTxn& ltxOuter,
                                     SequenceNumber current,
                                     uint64_t lowerBoundCloseTimeOffset,
                                     uint64_t upperBoundCloseTimeOffset)
 {
     LedgerTxn ltx(ltxOuter);
     int64_t minBaseFee = ltx.loadHeader().current().baseFee;
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    mInnerTx->maybeComputeSorobanResourceFee(
+        ltx.loadHeader().current().ledgerVersion,
+        app.getLedgerManager().getSorobanNetworkConfig(ltx), app.getConfig());
+#endif
     resetResults(ltx.loadHeader().current(), minBaseFee, false);
 
     SignatureChecker signatureChecker{ltx.loadHeader().current().ledgerVersion,
@@ -173,7 +203,7 @@ FeeBumpTransactionFrame::checkValid(AbstractLedgerTxn& ltxOuter,
     }
 
     bool res = mInnerTx->checkValidWithOptionallyChargedFee(
-        ltx, current, false, lowerBoundCloseTimeOffset,
+        app, ltx, current, false, lowerBoundCloseTimeOffset,
         upperBoundCloseTimeOffset);
     updateResult(getResult(), mInnerTx);
     return res;
@@ -249,7 +279,7 @@ FeeBumpTransactionFrame::commonValid(SignatureChecker& signatureChecker,
     // if we are in applying mode fee was already deduced from signing account
     // balance, if not, we need to check if after that deduction this account
     // will still have minimum balance
-    int64_t feeToPay = applying ? 0 : getFeeBid();
+    int64_t feeToPay = applying ? 0 : getFullFee();
     // don't let the account go below the reserve after accounting for
     // liabilities
     if (getAvailableBalance(header, feeSource) < feeToPay)
@@ -268,9 +298,16 @@ FeeBumpTransactionFrame::getEnvelope() const
 }
 
 int64_t
-FeeBumpTransactionFrame::getFeeBid() const
+FeeBumpTransactionFrame::getFullFee() const
 {
     return mEnvelope.feeBump().tx.fee;
+}
+
+int64_t
+FeeBumpTransactionFrame::getFeeBid() const
+{
+    int64_t flatFee = mInnerTx->getFullFee() - mInnerTx->getFeeBid();
+    return mEnvelope.feeBump().tx.fee - flatFee;
 }
 
 int64_t
@@ -280,16 +317,17 @@ FeeBumpTransactionFrame::getFee(LedgerHeader const& header,
 {
     if (!baseFee)
     {
-        return getFeeBid();
+        return getFullFee();
     }
+    int64_t flatFee = mInnerTx->getFullFee() - mInnerTx->getFeeBid();
     int64_t adjustedFee = *baseFee * std::max<int64_t>(1, getNumOperations());
     if (applying)
     {
-        return std::min<int64_t>(getFeeBid(), adjustedFee);
+        return flatFee + std::min<int64_t>(getFeeBid(), adjustedFee);
     }
     else
     {
-        return adjustedFee;
+        return flatFee + adjustedFee;
     }
 }
 

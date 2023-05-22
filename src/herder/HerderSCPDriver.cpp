@@ -360,18 +360,19 @@ HerderSCPDriver::validateValue(uint64_t slotIndex, Value const& value,
         auto const& lcl = mLedgerManager.getLastClosedLedgerHeader();
 
         LedgerUpgradeType lastUpgradeType = LEDGER_UPGRADE_VERSION;
+
         // check upgrades
         for (size_t i = 0;
              i < b.upgrades.size() && res != SCPDriver::kInvalidValue; i++)
         {
             LedgerUpgradeType thisUpgradeType;
             if (!mUpgrades.isValid(b.upgrades[i], thisUpgradeType, nomination,
-                                   mApp.getConfig(), lcl.header))
+                                   mApp, lcl.header))
             {
-                CLOG_TRACE(
-                    Herder,
-                    "HerderSCPDriver::validateValue invalid step at index {}",
-                    i);
+                CLOG_TRACE(Herder,
+                           "HerderSCPDriver::validateValue invalid step at "
+                           "index {}",
+                           i);
                 res = SCPDriver::kInvalidValue;
             }
             else if (i != 0 && (lastUpgradeType >= thisUpgradeType))
@@ -421,7 +422,7 @@ HerderSCPDriver::extractValidValue(uint64_t slotIndex, Value const& value)
         LedgerUpgradeType thisUpgradeType;
         for (auto it = b.upgrades.begin(); it != b.upgrades.end();)
         {
-            if (!mUpgrades.isValid(*it, thisUpgradeType, true, mApp.getConfig(),
+            if (!mUpgrades.isValid(*it, thisUpgradeType, true, mApp,
                                    lcl.header))
             {
                 it = b.upgrades.erase(it);
@@ -1114,16 +1115,23 @@ HerderSCPDriver::recordSCPExecutionMetrics(uint64_t slotIndex)
 }
 
 void
-HerderSCPDriver::purgeSlots(uint64_t maxSlotIndex)
+HerderSCPDriver::purgeSlots(uint64_t maxSlotIndex, uint64 slotToKeep)
 {
     // Clean up timings map
     auto it = mSCPExecutionTimes.begin();
     while (it != mSCPExecutionTimes.end() && it->first < maxSlotIndex)
     {
-        it = mSCPExecutionTimes.erase(it);
+        if (it->first == slotToKeep)
+        {
+            ++it;
+        }
+        else
+        {
+            it = mSCPExecutionTimes.erase(it);
+        }
     }
 
-    getSCP().purgeSlots(maxSlotIndex);
+    getSCP().purgeSlots(maxSlotIndex, slotToKeep);
 }
 
 void

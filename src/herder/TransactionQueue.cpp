@@ -117,6 +117,11 @@ canReplaceByFee(TransactionFrameBasePtr tx, TransactionFrameBasePtr oldTx,
         {
             minFee = INT64_MAX;
         }
+        else
+        {
+            // Add the potential flat component to the resulting min fee.
+            minFee += tx->getFullFee() - tx->getFeeBid();
+        }
     }
     return res;
 }
@@ -193,7 +198,7 @@ isDuplicateTx(TransactionFrameBasePtr oldTx, TransactionFrameBasePtr newTx)
 TransactionQueue::AddResult
 TransactionQueue::canAdd(TransactionFrameBasePtr tx,
                          AccountStates::iterator& stateIter,
-                         TimestampedTransactions::iterator& oldTxIter,
+                         TimestampedTransactions::iterator& txToReplaceIter,
                          std::vector<std::pair<TxStackPtr, bool>>& txsToEvict)
 {
     ZoneScoped;
@@ -206,6 +211,20 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
         return TransactionQueue::AddResult::ADD_STATUS_FILTERED;
     }
 
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    {
+        // Transaction queue performs read-only transactions to the database and
+        // there are no concurrent writers, so it is safe to not enclose all the
+        // SQL statements into one transaction here.
+        LedgerTxn ltx(mApp.getLedgerTxnRoot(),
+                      /* shouldUpdateLastModified */ true,
+                      TransactionMode::READ_ONLY_WITHOUT_SQL_TXN);
+        tx->maybeComputeSorobanResourceFee(
+            ltx.loadHeader().current().ledgerVersion,
+            mApp.getLedgerManager().getSorobanNetworkConfig(ltx),
+            mApp.getConfig());
+    }
+#endif
     int64_t netFee = tx->getFeeBid();
     int64_t seqNum = 0;
     TransactionFrameBasePtr oldTx;
@@ -214,7 +233,18 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
     if (stateIter != mAccountStates.end())
     {
         auto& transactions = stateIter->second.mTransactions;
-        oldTxIter = transactions.end();
+
+        // Invariant: there must be one transaction per source account at all
+        // times if LIMIT_TX_QUEUE_SOURCE_ACCOUNT is on
+        if (mApp.getConfig().LIMIT_TX_QUEUE_SOURCE_ACCOUNT &&
+            transactions.size() > 1)
+        {
+            throw std::runtime_error(
+                "TransactionQueue::canAdd invalid state: more than one "
+                "transaction per source account");
+        }
+
+        txToReplaceIter = transactions.end();
 
         if (!transactions.empty())
         {
@@ -225,6 +255,14 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
                     iter != transactions.end() && isDuplicateTx(iter->mTx, tx))
                 {
                     return TransactionQueue::AddResult::ADD_STATUS_DUPLICATE;
+                }
+
+                if (mApp.getConfig().LIMIT_TX_QUEUE_SOURCE_ACCOUNT)
+                {
+                    // If there's already a transaction in the queue, we reject
+                    // any new transaction
+                    return TransactionQueue::AddResult::
+                        ADD_STATUS_TRY_AGAIN_LATER;
                 }
 
                 // By this point, there's already a tx in the queue for this
@@ -240,30 +278,31 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
             }
             else
             {
-                if (!findBySeq(tx, transactions, oldTxIter))
+                if (!findBySeq(tx, transactions, txToReplaceIter))
                 {
                     tx->getResult().result.code(txBAD_SEQ);
                     return TransactionQueue::AddResult::ADD_STATUS_ERROR;
                 }
 
-                if (oldTxIter != transactions.end())
+                // Found tx with seqnum to replace
+                if (txToReplaceIter != transactions.end())
                 {
                     // Replace-by-fee logic
-                    if (isDuplicateTx(oldTxIter->mTx, tx))
+                    if (isDuplicateTx(txToReplaceIter->mTx, tx))
                     {
                         return TransactionQueue::AddResult::
                             ADD_STATUS_DUPLICATE;
                     }
 
                     int64_t minFee;
-                    if (!canReplaceByFee(tx, oldTxIter->mTx, minFee))
+                    if (!canReplaceByFee(tx, txToReplaceIter->mTx, minFee))
                     {
                         tx->getResult().result.code(txINSUFFICIENT_FEE);
                         tx->getResult().feeCharged = minFee;
                         return TransactionQueue::AddResult::ADD_STATUS_ERROR;
                     }
 
-                    oldTx = oldTxIter->mTx;
+                    oldTx = txToReplaceIter->mTx;
                     int64_t oldFee = oldTx->getFeeBid();
                     if (oldTx->getFeeSourceID() == tx->getFeeSourceID())
                     {
@@ -271,7 +310,8 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
                     }
                 }
 
-                if (oldTxIter != transactions.begin() &&
+                // Tx to replace is at the beginning, meaning lowest seqnum
+                if (txToReplaceIter != transactions.begin() &&
                     (tx->getMinSeqAge() != 0 || tx->getMinSeqLedgerGap() != 0))
                 {
                     return TransactionQueue::AddResult::
@@ -282,19 +322,35 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
                 // existing transaction, use the previous one in the queue (if
                 // the tx is first, leave seqNum == 0 so the seqNum will be
                 // loaded from the account)
-                if (oldTxIter == transactions.end())
+                if (txToReplaceIter == transactions.end())
                 {
+                    if (!transactions.empty() &&
+                        mApp.getConfig().LIMIT_TX_QUEUE_SOURCE_ACCOUNT)
+                    {
+                        // This is a new fee-bump transaction. We didn't find
+                        // any existing transaction to replace, so it should be
+                        // rejected due to source account limit
+                        return TransactionQueue::AddResult::
+                            ADD_STATUS_TRY_AGAIN_LATER;
+                    }
+
                     seqNum = transactions.back().mTx->getSeqNum();
                 }
-                else if (oldTxIter != transactions.begin())
+                else if (txToReplaceIter != transactions.begin())
                 {
-                    auto copyIt = oldTxIter - 1;
+                    // replace-by-fee logic, regardless of the source account
+                    // limit, don't reject the tx because the old tx will be
+                    // replaced (maintaining the invariance)
+                    auto copyIt = txToReplaceIter - 1;
                     seqNum = copyIt->mTx->getSeqNum();
                 }
             }
         }
     }
 
+    // Subtle: transactions are rejected based on the source account limit prior
+    // to this point. This is safe because we can't evict transactions from the
+    // same source account, so a newer transaction won't replace an old one.
     auto canAddRes = mTxQueueLimiter->canAddTx(tx, oldTx, txsToEvict);
     if (!canAddRes.first)
     {
@@ -325,7 +381,7 @@ TransactionQueue::canAdd(TransactionFrameBasePtr tx,
         ltx.loadHeader().current().ledgerSeq =
             mApp.getLedgerManager().getLastClosedLedgerNum() + 1;
     }
-    if (!tx->checkValid(ltx, seqNum, 0,
+    if (!tx->checkValid(mApp, ltx, seqNum, 0,
                         getUpperBoundCloseTimeOffset(mApp, closeTime)))
     {
         return TransactionQueue::AddResult::ADD_STATUS_ERROR;
@@ -352,9 +408,9 @@ TransactionQueue::releaseFeeMaybeEraseAccountState(TransactionFrameBasePtr tx)
 {
     auto iter = mAccountStates.find(tx->getFeeSourceID());
     releaseAssert(iter != mAccountStates.end() &&
-                  iter->second.mTotalFees >= tx->getFeeBid());
+                  iter->second.mTotalFees >= tx->getFullFee());
 
-    iter->second.mTotalFees -= tx->getFeeBid();
+    iter->second.mTotalFees -= tx->getFullFee();
     if (iter->second.mTransactions.empty())
     {
         if (iter->second.mTotalFees == 0)
@@ -521,11 +577,21 @@ TransactionQueue::tryAdd(TransactionFrameBasePtr tx, bool submittedFromSelf)
         oldTxIter = --stateIter->second.mTransactions.end();
         mSizeByAge[stateIter->second.mAge]->inc();
     }
+
+    // Maybe replaced-by-fee, make sure we maintain the invariant
+    if (mApp.getConfig().LIMIT_TX_QUEUE_SOURCE_ACCOUNT &&
+        stateIter->second.mTransactions.size() > 1)
+    {
+        throw std::runtime_error(
+            "Invalid state: tx queue source account limit violated");
+    }
+
+    // Update transaction chain accounting
     auto ops = tx->getNumOperations();
     stateIter->second.mQueueSizeOps += ops;
     stateIter->second.mBroadcastQueueOps += ops;
     auto& thisAccountState = mAccountStates[tx->getFeeSourceID()];
-    thisAccountState.mTotalFees += tx->getFeeBid();
+    thisAccountState.mTotalFees += tx->getFullFee();
 
     // make space so that we can add this transaction
     // this will succeed as `canAdd` ensures that this is the case

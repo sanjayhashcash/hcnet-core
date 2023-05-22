@@ -4,7 +4,6 @@
 
 #include "IndexBucketsWork.h"
 #include "bucket/BucketIndex.h"
-#include "bucket/BucketList.h"
 #include "bucket/BucketManager.h"
 #include "util/HashOfHash.h"
 #include "util/UnorderedSet.h"
@@ -53,8 +52,35 @@ IndexBucketsWork::IndexWork::postWork()
                 return;
             }
 
-            self->mIndex = BucketIndex::createIndex(
-                app.getBucketManager(), self->mBucket->getFilename());
+            auto& bm = app.getBucketManager();
+            auto indexFilename =
+                bm.bucketIndexFilename(self->mBucket->getHash());
+
+            if (bm.getConfig().isPersistingBucketListDBIndexes() &&
+                fs::exists(indexFilename))
+            {
+                self->mIndex = BucketIndex::load(bm, indexFilename,
+                                                 self->mBucket->getSize());
+
+                // If we could not load the index from the file, file is out of
+                // date and will be overwritten when we create a new index
+                if (!self->mIndex)
+                {
+                    CLOG_WARNING(Bucket, "Outdated index file: {}",
+                                 indexFilename);
+                }
+                else
+                {
+                    CLOG_DEBUG(Bucket, "Loaded index from file: {}",
+                               indexFilename);
+                }
+            }
+
+            if (!self->mIndex)
+            {
+                self->mIndex = BucketIndex::createIndex(
+                    bm, self->mBucket->getFilename(), self->mBucket->getHash());
+            }
 
             app.postOnMainThread(
                 [weak]() {
@@ -75,8 +101,9 @@ IndexBucketsWork::IndexWork::postWork()
         "IndexWork: starting in background");
 }
 
-IndexBucketsWork::IndexBucketsWork(Application& app)
-    : Work(app, "index-bucketList", BasicWork::RETRY_NEVER)
+IndexBucketsWork::IndexBucketsWork(
+    Application& app, std::vector<std::shared_ptr<Bucket>> const& buckets)
+    : Work(app, "index-bucketList", BasicWork::RETRY_NEVER), mBuckets(buckets)
 {
 }
 
@@ -100,10 +127,8 @@ IndexBucketsWork::doReset()
 void
 IndexBucketsWork::spawnWork()
 {
-    auto& bm = mApp.getBucketManager();
     UnorderedSet<Hash> indexedBuckets;
-
-    auto spawnIndexWork = [&](std::shared_ptr<Bucket> b) {
+    auto spawnIndexWork = [&](std::shared_ptr<Bucket> const& b) {
         // Don't index empty bucket or buckets that are already being
         // indexed. Sometimes one level's snap bucket may be another
         // level's future bucket. The indexing job may have started but
@@ -119,19 +144,9 @@ IndexBucketsWork::spawnWork()
         addWork<IndexWork>(b);
     };
 
-    // Index all buckets in bucket list, including future buckets that
-    // have already finished merging
-    for (uint32_t i = 0; i < bm.getBucketList().kNumLevels; ++i)
+    for (auto const& b : mBuckets)
     {
-        auto& level = bm.getBucketList().getLevel(i);
-        spawnIndexWork(level.getCurr());
-        spawnIndexWork(level.getSnap());
-        auto& nextFuture = level.getNext();
-        if (nextFuture.hasOutputHash())
-        {
-            auto hash = hexToBin256(nextFuture.getOutputHash());
-            spawnIndexWork(bm.getBucketByHash(hash));
-        }
+        spawnIndexWork(b);
     }
 
     mWorkSpawned = true;

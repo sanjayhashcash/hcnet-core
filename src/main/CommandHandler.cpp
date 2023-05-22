@@ -116,7 +116,6 @@ CommandHandler::CommandHandler(Application& app) : mApp(app)
     addRoute("metrics", &CommandHandler::metrics);
     addRoute("tx", &CommandHandler::tx);
 #ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
-    addRoute("preflight", &CommandHandler::preflight);
     addRoute("getledgerentry", &CommandHandler::getLedgerEntry);
 #endif
     addRoute("upgrades", &CommandHandler::upgrades);
@@ -568,6 +567,28 @@ CommandHandler::upgrades(std::string const& params, std::string& retStr)
             parseOptionalParam<uint32>(retMap, "protocolversion");
         p.mFlags = parseOptionalParam<uint32>(retMap, "flags");
 
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+        auto configXdrIter = retMap.find("configupgradesetkey");
+        if (configXdrIter != retMap.end())
+        {
+            std::vector<uint8_t> buffer;
+            decoder::decode_b64(configXdrIter->second, buffer);
+            ConfigUpgradeSetKey key;
+            xdr::xdr_from_opaque(buffer, key);
+            LedgerTxn ltx(mApp.getLedgerTxnRoot());
+
+            auto ptr = ConfigUpgradeSetFrame::makeFromKey(ltx, key);
+
+            if (!ptr ||
+                ptr->isValidForApply() != Upgrades::UpgradeValidity::VALID)
+            {
+                retStr = "Error setting configUpgradeSet";
+                return;
+            }
+
+            p.mConfigUpgradeSetKey = key;
+        }
+#endif
         mApp.getHerder().setUpgrades(p);
     }
     else if (s == "clear")
@@ -681,36 +702,6 @@ CommandHandler::ll(std::string const& params, std::string& retStr)
 }
 
 #ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
-void
-CommandHandler::preflight(std::string const& params, std::string& retStr)
-{
-    ZoneScoped;
-    Json::Value root;
-
-    std::map<std::string, std::string> paramMap;
-    http::server::server::parseParams(params, paramMap);
-    std::string blob = paramMap["blob"];
-    std::string sourceAcct = paramMap["source_account"];
-    if (!blob.empty())
-    {
-        AccountID acct;
-        if (!sourceAcct.empty())
-        {
-            acct = KeyUtils::fromStrKey<PublicKey>(sourceAcct);
-        }
-        InvokeHostFunctionOp op;
-        fromOpaqueBase64(op, blob);
-        root = InvokeHostFunctionOpFrame::preflight(mApp, op, acct);
-    }
-    else
-    {
-        throw std::invalid_argument(
-            "Must specify an InvokeHostFunctionOp blob: preflight?blob=<op in "
-            "base64 XDR format>[&source_account=<strkey>]");
-    }
-    retStr = Json::FastWriter().write(root);
-}
-
 void
 CommandHandler::getLedgerEntry(std::string const& params, std::string& retStr)
 {
@@ -989,7 +980,9 @@ CommandHandler::generateLoad(std::string const& params, std::string& retStr)
             parseOptionalParam<uint32_t>(map, "maxfeerate");
         cfg.skipLowFeeTxs =
             parseOptionalParamOrDefault<bool>(map, "skiplowfeetxs", false);
-
+        // Only for MIXED_TX mode; fraction of DEX transactions.
+        cfg.dexTxPercent =
+            parseOptionalParamOrDefault<uint32_t>(map, "dextxpercent", 0);
         if (cfg.batchSize > 100)
         {
             cfg.batchSize = 100;

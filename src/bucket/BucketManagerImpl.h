@@ -76,7 +76,6 @@ class BucketManagerImpl : public BucketManager
     void cleanupStaleFiles();
     void deleteTmpDirAndUnlockBucketDir();
     void deleteEntireBucketDir();
-    bool renameBucket(std::string const& src, std::string const& dst);
 
     medida::Timer& getBulkLoadTimer(std::string const& label) const;
     medida::Timer& getPointLoadTimer(LedgerEntryType t) const;
@@ -97,6 +96,7 @@ class BucketManagerImpl : public BucketManager
     ~BucketManagerImpl() override;
     void initialize() override;
     void dropAll() override;
+    std::string bucketIndexFilename(Hash const& hash) const override;
     std::string const& getTmpDir() override;
     std::string const& getBucketDir() const override;
     BucketList& getBucketList() override;
@@ -104,6 +104,8 @@ class BucketManagerImpl : public BucketManager
     MergeCounters readMergeCounters() override;
     void incrMergeCounters(MergeCounters const&) override;
     TmpDirManager& getTmpDirManager() override;
+    bool renameBucketDirFile(std::filesystem::path const& src,
+                             std::filesystem::path const& dst) override;
     std::shared_ptr<Bucket>
     adoptFileAsBucket(std::string const& filename, uint256 const& hash,
                       size_t nObjects, size_t nBytes, MergeKey* mergeKey,
@@ -156,9 +158,8 @@ class BucketManagerImpl : public BucketManager
     std::set<Hash> getAllReferencedBuckets() const override;
     std::vector<std::string>
     checkForMissingBucketsFiles(HistoryArchiveState const& has) override;
-    void restartMerges(HistoryArchiveState const& has,
-                       uint32_t maxProtocolVersion) override;
-    void assumeState(HistoryArchiveState const& has) override;
+    void assumeState(HistoryArchiveState const& has,
+                     uint32_t maxProtocolVersion) override;
     void shutdown() override;
 
     bool isShutdown() const override;

@@ -136,7 +136,7 @@ applyCheck(TransactionFramePtr tx, Application& app, bool checkSeqNum)
     {
         LedgerTxn ltxFeeProc(ltx);
         // use checkedTx here for validity check as to keep tx untouched
-        check = checkedTx->checkValid(ltxFeeProc, 0, 0, 0);
+        check = checkedTx->checkValid(app, ltxFeeProc, 0, 0, 0);
         checkResult = checkedTx->getResult();
         REQUIRE((!check || checkResult.result.code() == txSUCCESS));
 
@@ -412,7 +412,7 @@ validateTxResults(TransactionFramePtr const& tx, Application& app,
         app.getNetworkID(), tx->getEnvelope());
     {
         LedgerTxn ltx(app.getLedgerTxnRoot());
-        REQUIRE(checkedTx->checkValid(ltx, 0, 0, 0) == shouldValidateOk);
+        REQUIRE(checkedTx->checkValid(app, ltx, 0, 0, 0) == shouldValidateOk);
     }
     REQUIRE(checkedTx->getResult().result.code() == validationResult.code);
     REQUIRE(checkedTx->getResult().feeCharged == validationResult.fee);
@@ -1562,6 +1562,31 @@ envelopeFromOps(Hash const& networkID, TestAccount& source,
         tx.v1().tx.cond.type(PRECOND_V2);
         tx.v1().tx.cond.v2() = *cond;
     }
+    sign(networkID, source, tx.v1());
+    for (auto const& opKey : opKeys)
+    {
+        sign(networkID, opKey, tx.v1());
+    }
+    return tx;
+}
+
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+static TransactionEnvelope
+sorobanEnvelopeFromOps(Hash const& networkID, TestAccount& source,
+                       std::vector<Operation> const& ops,
+                       std::vector<SecretKey> const& opKeys,
+                       SorobanResources const& resources, uint32_t fee,
+                       uint32_t refundableFee)
+{
+    TransactionEnvelope tx(ENVELOPE_TYPE_TX);
+    tx.v1().tx.sourceAccount = toMuxedAccount(source);
+    tx.v1().tx.fee = fee;
+    tx.v1().tx.seqNum = source.nextSequenceNumber();
+    tx.v1().tx.ext.v(1);
+    tx.v1().tx.ext.sorobanData().resources = resources;
+    tx.v1().tx.ext.sorobanData().refundableFee = refundableFee;
+    std::copy(ops.begin(), ops.end(),
+              std::back_inserter(tx.v1().tx.operations));
 
     sign(networkID, source, tx.v1());
     for (auto const& opKey : opKeys)
@@ -1570,6 +1595,7 @@ envelopeFromOps(Hash const& networkID, TestAccount& source,
     }
     return tx;
 }
+#endif
 
 TransactionFrameBasePtr
 transactionFrameFromOps(Hash const& networkID, TestAccount& source,
@@ -1581,6 +1607,20 @@ transactionFrameFromOps(Hash const& networkID, TestAccount& source,
         networkID, envelopeFromOps(networkID, source, ops, opKeys, cond));
 }
 
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+TransactionFrameBasePtr
+sorobanTransactionFrameFromOps(Hash const& networkID, TestAccount& source,
+                               std::vector<Operation> const& ops,
+                               std::vector<SecretKey> const& opKeys,
+                               SorobanResources const& resources, uint32_t fee,
+                               uint32_t refundableFee)
+{
+    return TransactionFrameBase::makeTransactionFromWire(
+        networkID, sorobanEnvelopeFromOps(networkID, source, ops, opKeys,
+                                          resources, fee, refundableFee));
+}
+#endif
+
 LedgerUpgrade
 makeBaseReserveUpgrade(int baseReserve)
 {
@@ -1590,21 +1630,39 @@ makeBaseReserveUpgrade(int baseReserve)
 }
 
 LedgerHeader
-executeUpgrades(Application& app, xdr::xvector<UpgradeType, 6> const& upgrades)
+executeUpgrades(Application& app, xdr::xvector<UpgradeType, 6> const& upgrades,
+                bool upgradesIgnored)
 {
     auto& lm = app.getLedgerManager();
+    auto currLh = app.getLedgerManager().getLastClosedLedgerHeader().header;
+
     auto const& lcl = lm.getLastClosedLedgerHeader();
     auto txSet = TxSetFrame::makeEmpty(lcl);
     auto lastCloseTime = lcl.header.scpValue.closeTime;
     app.getHerder().externalizeValue(txSet, lcl.header.ledgerSeq + 1,
                                      lastCloseTime, upgrades);
+    if (upgradesIgnored)
+    {
+        auto const& newHeader = lm.getLastClosedLedgerHeader().header;
+        REQUIRE(currLh.baseFee == newHeader.baseFee);
+        REQUIRE(currLh.baseReserve == newHeader.baseReserve);
+        REQUIRE(currLh.ledgerVersion == newHeader.ledgerVersion);
+        REQUIRE(currLh.maxTxSetSize == newHeader.maxTxSetSize);
+        REQUIRE(currLh.ext.v() == newHeader.ext.v());
+        if (currLh.ext.v() == 1)
+        {
+            REQUIRE(currLh.ext.v1().flags == newHeader.ext.v1().flags);
+        }
+    }
     return lm.getLastClosedLedgerHeader().header;
 };
 
 LedgerHeader
-executeUpgrade(Application& app, LedgerUpgrade const& lupgrade)
+executeUpgrade(Application& app, LedgerUpgrade const& lupgrade,
+               bool upgradeIgnored)
 {
-    return executeUpgrades(app, {LedgerTestUtils::toUpgradeType(lupgrade)});
+    return executeUpgrades(app, {LedgerTestUtils::toUpgradeType(lupgrade)},
+                           upgradeIgnored);
 };
 
 // trades is a vector of pairs, where the bool indicates if assetA or assetB is

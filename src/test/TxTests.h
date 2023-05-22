@@ -278,13 +278,21 @@ transactionFrameFromOps(Hash const& networkID, TestAccount& source,
                         std::vector<Operation> const& ops,
                         std::vector<SecretKey> const& opKeys,
                         std::optional<PreconditionsV2> cond = std::nullopt);
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+TransactionFrameBasePtr sorobanTransactionFrameFromOps(
+    Hash const& networkID, TestAccount& source,
+    std::vector<Operation> const& ops, std::vector<SecretKey> const& opKeys,
+    SorobanResources const& resources, uint32_t fee, uint32_t refundableFee);
+#endif
 
 LedgerUpgrade makeBaseReserveUpgrade(int baseReserve);
 
 LedgerHeader executeUpgrades(Application& app,
-                             xdr::xvector<UpgradeType, 6> const& upgrades);
+                             xdr::xvector<UpgradeType, 6> const& upgrades,
+                             bool upgradesIgnored = false);
 
-LedgerHeader executeUpgrade(Application& app, LedgerUpgrade const& lupgrade);
+LedgerHeader executeUpgrade(Application& app, LedgerUpgrade const& lupgrade,
+                            bool upgradeIgnored = false);
 
 void
 depositTradeWithdrawTest(Application& app, TestAccount& root, int depositSize,

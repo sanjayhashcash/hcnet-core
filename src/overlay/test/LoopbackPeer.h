@@ -4,6 +4,7 @@
 // under the Apache License, Version 2.0. See the COPYING file at the root
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
+#include "overlay/FlowControl.h"
 #include "overlay/Peer.h"
 #include <deque>
 #include <random>
@@ -64,6 +65,11 @@ class LoopbackPeer : public Peer
     {
     }
     LoopbackPeer(Application& app, PeerRole role);
+
+    static std::pair<std::shared_ptr<LoopbackPeer>,
+                     std::shared_ptr<LoopbackPeer>>
+    initiate(Application& app, Application& otherApp);
+
     void drop(std::string const& reason, DropDirection dropDirection,
               DropMode dropMode) override;
 
@@ -104,6 +110,14 @@ class LoopbackPeer : public Peer
     double getReorderProbability() const;
     void setReorderProbability(double d);
 
+#ifdef BUILD_TESTS
+    void
+    overrideDisablePullModeForTesting()
+    {
+        mOverrideDisablePullModeForTesting = true;
+    }
+#endif
+
     void clearInAndOutQueues();
 
     std::string
@@ -112,27 +126,27 @@ class LoopbackPeer : public Peer
         return mDropReason;
     }
 
-    std::array<std::deque<QueuedOutboundMessage>, 4>&
+    std::array<std::deque<FlowControl::QueuedOutboundMessage>, 4>&
     getQueues()
     {
-        return mOutboundQueues;
+        return getFlowControl()->getQueuesForTesting();
     }
 
-    uint64_t&
+    uint64_t
     getOutboundCapacity()
     {
-        return mOutboundCapacity;
+        return getFlowControl()
+            ->getFlowControlCapacity()
+            ->getOutboundCapacity();
     }
 
     bool checkCapacity(uint64_t expectedOutboundCapacity) const;
 
     std::string getIP() const override;
 
-    using Peer::addMsgAndMaybeTrimQueue;
     using Peer::sendAuth;
     using Peer::sendAuthenticatedMessage;
     using Peer::sendMessage;
-    using Peer::sendSendMore;
 
     friend class LoopbackPeerConnection;
 };

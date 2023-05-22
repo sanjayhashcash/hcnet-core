@@ -28,6 +28,7 @@
 #include "medida/metrics_registry.h"
 
 #include <cmath>
+#include <crypto/SHA.h>
 #include <fmt/format.h>
 #include <iomanip>
 #include <set>
@@ -81,6 +82,16 @@ LoadGenerator::getMode(std::string const& mode)
     {
         return LoadGenMode::PRETEND;
     }
+    else if (mode == "mixed_txs")
+    {
+        return LoadGenMode::MIXED_TXS;
+    }
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    else if (mode == "soroban")
+    {
+        return LoadGenMode::SOROBAN;
+    }
+#endif
     else
     {
         // unknown mode
@@ -258,21 +269,82 @@ LoadGenerator::generateLoad(GeneratedLoadConfig cfg)
 
     for (int64_t i = 0; i < txPerStep; ++i)
     {
-        switch (cfg.mode)
+        if (cfg.mode == LoadGenMode::CREATE)
         {
-        case LoadGenMode::CREATE:
             cfg.nAccounts = submitCreationTx(cfg.nAccounts, cfg.offset,
                                              cfg.batchSize, ledgerNum);
-            break;
-        case LoadGenMode::PAY:
-            cfg.nTxs = submitPaymentOrPretendTx(cfg, ledgerNum, 1);
-            break;
-        case LoadGenMode::PRETEND:
-            auto opCount = chooseOpCount(mApp.getConfig());
-            cfg.nTxs = submitPaymentOrPretendTx(cfg, ledgerNum, opCount);
-            break;
         }
+        else
+        {
+            auto sourceAccountId =
+                rand_uniform<uint64_t>(0, cfg.nAccounts - 1) + cfg.offset;
 
+            std::function<
+                std::pair<LoadGenerator::TestAccountPtr, TransactionFramePtr>()>
+                generateTx;
+
+            switch (cfg.mode)
+            {
+            case LoadGenMode::CREATE:
+                releaseAssert(false);
+                break;
+            case LoadGenMode::PAY:
+                generateTx = [&]() {
+                    return paymentTransaction(cfg.nAccounts, cfg.offset,
+                                              ledgerNum, sourceAccountId, 1,
+                                              cfg.maxGeneratedFeeRate);
+                };
+                break;
+            case LoadGenMode::PRETEND:
+            {
+                auto opCount = chooseOpCount(mApp.getConfig());
+                generateTx = [&, opCount]() {
+                    return pretendTransaction(cfg.nAccounts, cfg.offset,
+                                              ledgerNum, sourceAccountId,
+                                              opCount, cfg.maxGeneratedFeeRate);
+                };
+            }
+            break;
+            case LoadGenMode::MIXED_TXS:
+            {
+                auto opCount = chooseOpCount(mApp.getConfig());
+                bool isDex = rand_uniform<uint32_t>(1, 100) <= cfg.dexTxPercent;
+                generateTx = [&, opCount, isDex]() {
+                    if (isDex)
+                    {
+                        return manageOfferTransaction(ledgerNum,
+                                                      sourceAccountId, opCount,
+                                                      cfg.maxGeneratedFeeRate);
+                    }
+                    else
+                    {
+                        return paymentTransaction(
+                            cfg.nAccounts, cfg.offset, ledgerNum,
+                            sourceAccountId, opCount, cfg.maxGeneratedFeeRate);
+                    }
+                };
+            }
+            break;
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+            case LoadGenMode::SOROBAN:
+            {
+                generateTx = [&]() {
+                    return sorobanTransaction(ledgerNum, sourceAccountId);
+                };
+            }
+            break;
+#endif
+            }
+
+            if (submitTx(cfg, generateTx))
+            {
+                --cfg.nTxs;
+            }
+            else if (mFailed)
+            {
+                break;
+            }
+        }
         if (cfg.nAccounts == 0 || (!isCreate && cfg.nTxs == 0))
         {
             // Nothing to do for the rest of the step
@@ -340,22 +412,13 @@ LoadGenerator::submitCreationTx(uint32_t nAccounts, uint32_t offset,
     return nAccounts;
 }
 
-uint32_t
-LoadGenerator::submitPaymentOrPretendTx(GeneratedLoadConfig const& cfg,
-                                        uint32_t ledgerNum, uint32_t opCount)
+bool
+LoadGenerator::submitTx(GeneratedLoadConfig const& cfg,
+                        std::function<std::pair<LoadGenerator::TestAccountPtr,
+                                                TransactionFramePtr>()>
+                            generateTx)
 {
-    auto sourceAccountId =
-        rand_uniform<uint64_t>(0, cfg.nAccounts - 1) + cfg.offset;
-    TransactionFramePtr tx;
-    TestAccountPtr from;
-    bool usePaymentOp = cfg.mode == LoadGenMode::PAY;
-    std::tie(from, tx) =
-        usePaymentOp
-            ? paymentTransaction(cfg.nAccounts, cfg.offset, ledgerNum,
-                                 sourceAccountId, cfg.maxGeneratedFeeRate)
-            : pretendTransaction(cfg.nAccounts, cfg.offset, ledgerNum,
-                                 sourceAccountId, opCount,
-                                 cfg.maxGeneratedFeeRate);
+    auto [from, tx] = generateTx();
 
     TransactionResultCode code;
     TransactionQueue::AddResult status;
@@ -376,29 +439,23 @@ LoadGenerator::submitPaymentOrPretendTx(GeneratedLoadConfig const& cfg,
             from->setSequenceNumber(from->getLastSequenceNumber() - 1);
             CLOG_INFO(LoadGen, "skipped low fee tx with fee {}",
                       tx->getFeeBid());
-            return cfg.nTxs;
+            return false;
         }
         if (++numTries >= TX_SUBMIT_MAX_TRIES ||
             status != TransactionQueue::AddResult::ADD_STATUS_ERROR)
         {
             mFailed = true;
-            return 0;
+            return false;
         }
 
         // In case of bad seqnum, attempt refreshing it from the DB
         maybeHandleFailedTx(from, status, code); // Update seq num
 
         // Regenerate a new payment tx
-        std::tie(from, tx) =
-            usePaymentOp
-                ? paymentTransaction(cfg.nAccounts, cfg.offset, ledgerNum,
-                                     sourceAccountId, cfg.maxGeneratedFeeRate)
-                : pretendTransaction(cfg.nAccounts, cfg.offset, ledgerNum,
-                                     sourceAccountId, opCount,
-                                     cfg.maxGeneratedFeeRate);
+        std::tie(from, tx) = generateTx();
     }
 
-    return cfg.nTxs - 1;
+    return true;
 }
 
 void
@@ -547,18 +604,83 @@ LoadGenerator::findAccount(uint64_t accountId, uint32_t ledgerNum)
 std::pair<LoadGenerator::TestAccountPtr, TransactionFramePtr>
 LoadGenerator::paymentTransaction(uint32_t numAccounts, uint32_t offset,
                                   uint32_t ledgerNum, uint64_t sourceAccount,
+                                  uint32_t opCount,
                                   std::optional<uint32_t> maxGeneratedFeeRate)
 {
     TestAccountPtr to, from;
     uint64_t amount = 1;
     std::tie(from, to) =
         pickAccountPair(numAccounts, offset, ledgerNum, sourceAccount);
-    vector<Operation> paymentOps = {
-        txtest::payment(to->getPublicKey(), amount)};
+    vector<Operation> paymentOps;
+    paymentOps.reserve(opCount);
+    for (uint32_t i = 0; i < opCount; ++i)
+    {
+        paymentOps.emplace_back(txtest::payment(to->getPublicKey(), amount));
+    }
+
     return std::make_pair(from, createTransactionFramePtr(from, paymentOps,
                                                           LoadGenMode::PAY,
                                                           maxGeneratedFeeRate));
 }
+
+std::pair<LoadGenerator::TestAccountPtr, TransactionFramePtr>
+LoadGenerator::manageOfferTransaction(
+    uint32_t ledgerNum, uint64_t accountId, uint32_t opCount,
+    std::optional<uint32_t> maxGeneratedFeeRate)
+{
+    auto account = findAccount(accountId, ledgerNum);
+    Asset selling(ASSET_TYPE_NATIVE);
+    Asset buying(ASSET_TYPE_CREDIT_ALPHANUM4);
+    strToAssetCode(buying.alphaNum4().assetCode, "USD");
+    vector<Operation> ops;
+    for (uint32_t i = 0; i < opCount; ++i)
+    {
+        ops.emplace_back(txtest::manageBuyOffer(
+            rand_uniform<int64_t>(1, 10000000), selling, buying,
+            Price{rand_uniform<int32_t>(1, 100), rand_uniform<int32_t>(1, 100)},
+            100));
+    }
+    return std::make_pair(
+        account, createTransactionFramePtr(account, ops, LoadGenMode::MIXED_TXS,
+                                           maxGeneratedFeeRate));
+}
+
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+std::pair<LoadGenerator::TestAccountPtr, TransactionFramePtr>
+LoadGenerator::sorobanTransaction(uint32_t ledgerNum, uint64_t accountId)
+{
+    auto account = findAccount(accountId, ledgerNum);
+    Operation deployOp;
+    deployOp.body.type(INVOKE_HOST_FUNCTION);
+    auto& uploadHF =
+        deployOp.body.invokeHostFunctionOp().functions.emplace_back();
+    uploadHF.args.type(HOST_FUNCTION_TYPE_UPLOAD_CONTRACT_WASM);
+    auto& uploadContractWasmArgs = uploadHF.args.uploadContractWasm();
+    uploadContractWasmArgs.code.resize(1000);
+    auto byteDistr = uniform_int_distribution<uint8_t>();
+    std::generate(uploadContractWasmArgs.code.begin(),
+                  uploadContractWasmArgs.code.end(),
+                  [&byteDistr]() { return byteDistr(gRandomEngine); });
+
+    LedgerKey contractCodeLedgerKey;
+    contractCodeLedgerKey.type(CONTRACT_CODE);
+    contractCodeLedgerKey.contractCode().hash =
+        xdrSha256(uploadContractWasmArgs);
+
+    SorobanResources resources;
+    resources.footprint.readWrite = {contractCodeLedgerKey};
+    resources.instructions = 200'000;
+    resources.readBytes = 1000;
+    resources.writeBytes = 5000;
+    resources.extendedMetaDataSizeBytes = 6000;
+    auto inclusionFeeDistr = uniform_int_distribution<uint32_t>(100, 1000);
+    auto tx = sorobanTransactionFrameFromOps(
+        mApp.getNetworkID(), *account, {deployOp}, {}, resources,
+        100'000 + inclusionFeeDistr(gRandomEngine), 10'000);
+    return std::make_pair(account,
+                          std::dynamic_pointer_cast<TransactionFrame>(tx));
+}
+#endif
 
 std::pair<LoadGenerator::TestAccountPtr, TransactionFramePtr>
 LoadGenerator::pretendTransaction(uint32_t numAccounts, uint32_t offset,
@@ -726,7 +848,8 @@ LoadGenerator::waitTillCompleteWithoutChecks()
 
 LoadGenerator::TxMetrics::TxMetrics(medida::MetricsRegistry& m)
     : mAccountCreated(m.NewMeter({"loadgen", "account", "created"}, "account"))
-    , mNativePayment(m.NewMeter({"loadgen", "payment", "native"}, "payment"))
+    , mNativePayment(m.NewMeter({"loadgen", "payment", "submitted"}, "op"))
+    , mManageOfferOps(m.NewMeter({"loadgen", "manageoffer", "submitted"}, "op"))
     , mPretendOps(m.NewMeter({"loadgen", "pretend", "submitted"}, "op"))
     , mTxnAttempted(m.NewMeter({"loadgen", "txn", "attempted"}, "txn"))
     , mTxnRejected(m.NewMeter({"loadgen", "txn", "rejected"}, "txn"))
@@ -737,17 +860,19 @@ LoadGenerator::TxMetrics::TxMetrics(medida::MetricsRegistry& m)
 void
 LoadGenerator::TxMetrics::report()
 {
-    CLOG_DEBUG(LoadGen, "Counts: {} tx, {} rj, {} by, {} ac ({} na, {} pr, ",
+    CLOG_DEBUG(LoadGen,
+               "Counts: {} tx, {} rj, {} by, {} ac ({} na, {} pr, {} dex",
                mTxnAttempted.count(), mTxnRejected.count(), mTxnBytes.count(),
                mAccountCreated.count(), mNativePayment.count(),
-               mPretendOps.count());
+               mPretendOps.count(), mManageOfferOps.one_minute_rate());
 
     CLOG_DEBUG(
         LoadGen,
-        "Rates/sec (1m EWMA): {} tx, {} rj, {} by, {} ac, {} na, {} pr, ",
+        "Rates/sec (1m EWMA): {} tx, {} rj, {} by, {} ac, {} na, {} pr, {} dex",
         mTxnAttempted.one_minute_rate(), mTxnRejected.one_minute_rate(),
         mTxnBytes.one_minute_rate(), mAccountCreated.one_minute_rate(),
-        mNativePayment.one_minute_rate(), mPretendOps.one_minute_rate());
+        mNativePayment.one_minute_rate(), mPretendOps.one_minute_rate(),
+        mManageOfferOps.one_minute_rate());
 }
 
 TransactionFramePtr
@@ -808,6 +933,16 @@ LoadGenerator::execute(TransactionFramePtr& txf, LoadGenMode mode,
         break;
     case LoadGenMode::PRETEND:
         txm.mPretendOps.Mark(txf->getNumOperations());
+        break;
+    case LoadGenMode::MIXED_TXS:
+        if (txf->hasDexOperations())
+        {
+            txm.mManageOfferOps.Mark(txf->getNumOperations());
+        }
+        else
+        {
+            txm.mNativePayment.Mark(txf->getNumOperations());
+        }
         break;
     }
 

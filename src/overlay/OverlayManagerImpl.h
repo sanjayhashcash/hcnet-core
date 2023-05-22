@@ -86,8 +86,10 @@ class OverlayManagerImpl : public OverlayManager
     RandomEvictionCache<uint64_t, bool> mMessageCache;
 
     void tick();
+    void updateTimerAndMaybeDropRandomPeer(bool shouldDrop);
     VirtualTimer mTimer;
     VirtualTimer mPeerIPTimer;
+    std::optional<VirtualClock::time_point> mLastOutOfSyncReconnect;
 
     friend class OverlayManagerTests;
 
@@ -123,6 +125,7 @@ class OverlayManagerImpl : public OverlayManager
     int const MAX_RETRY_COUNT = 15;
     std::chrono::milliseconds retryDelayDemand(int numAttemptsMade) const;
     size_t getMaxDemandSize() const;
+    int availableOutboundPendingSlots() const;
 
   public:
     OverlayManagerImpl(Application& app);
@@ -156,7 +159,6 @@ class OverlayManagerImpl : public OverlayManager
     getOutboundAuthenticatedPeers() const override;
     std::map<NodeID, Peer::pointer> getAuthenticatedPeers() const override;
     int getAuthenticatedPeersCount() const override;
-    int64_t getPullModePercentage() const override;
 
     // returns nullptr if the passed peer isn't found
     Peer::pointer getConnectedPeer(PeerBareAddress const& address) override;
@@ -215,7 +217,6 @@ class OverlayManagerImpl : public OverlayManager
 
     bool moveToAuthenticated(Peer::pointer peer);
 
-    int availableOutboundPendingSlots() const;
     int availableOutboundAuthenticatedSlots() const;
     int nonPreferredAuthenticatedCount() const;
 

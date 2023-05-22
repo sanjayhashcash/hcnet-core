@@ -134,17 +134,16 @@ OperationFrame::OperationFrame(Operation const& op, OperationResult& res,
 }
 
 bool
-OperationFrame::apply(SignatureChecker& signatureChecker,
-                      AbstractLedgerTxn& ltx, Config const& cfg,
-                      medida::MetricsRegistry& metrics)
+OperationFrame::apply(Application& app, SignatureChecker& signatureChecker,
+                      AbstractLedgerTxn& ltx)
 {
     ZoneScoped;
     bool res;
     CLOG_TRACE(Tx, "{}", xdr_to_string(mOperation, "Operation"));
-    res = checkValid(signatureChecker, ltx, true);
+    res = checkValid(app, signatureChecker, ltx, true);
     if (res)
     {
-        res = doApply(ltx, cfg, metrics);
+        res = doApply(app, ltx);
         CLOG_TRACE(Tx, "{}", xdr_to_string(mResult, "OperationResult"));
     }
 
@@ -152,11 +151,10 @@ OperationFrame::apply(SignatureChecker& signatureChecker,
 }
 
 bool
-OperationFrame::doApply(AbstractLedgerTxn& ltx, Config const& _cfg,
-                        medida::MetricsRegistry& _metrics)
+OperationFrame::doApply(Application& _app, AbstractLedgerTxn& ltx)
 {
-    // By default we ignore the cfg and metrics, but subclasses can override to
-    // intercept and use them.
+    // By default we ignore the app, but subclasses can override to
+    // intercept and use it.
     return doApply(ltx);
 }
 
@@ -227,7 +225,7 @@ OperationFrame::getResultCode() const
 // make sure sig is correct
 // verifies that the operation is well formed (operation specific)
 bool
-OperationFrame::checkValid(SignatureChecker& signatureChecker,
+OperationFrame::checkValid(Application& app, SignatureChecker& signatureChecker,
                            AbstractLedgerTxn& ltxOuter, bool forApply)
 {
     ZoneScoped;
@@ -261,6 +259,20 @@ OperationFrame::checkValid(SignatureChecker& signatureChecker,
 
     resetResultSuccess();
 
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    auto const& sorobanConfig =
+        app.getLedgerManager().getSorobanNetworkConfig(ltx);
+
+    return doCheckValid(sorobanConfig, ledgerVersion);
+#else
+    return doCheckValid(ledgerVersion);
+#endif
+}
+
+bool
+OperationFrame::doCheckValid(SorobanNetworkConfig const& config,
+                             uint32_t ledgerVersion)
+{
     return doCheckValid(ledgerVersion);
 }
 
@@ -281,6 +293,12 @@ OperationFrame::resetResultSuccess()
 
 bool
 OperationFrame::isDexOperation() const
+{
+    return false;
+}
+
+bool
+OperationFrame::isSoroban() const
 {
     return false;
 }

@@ -109,10 +109,13 @@ class BucketManager : NonMovableOrCopyable
     }
     virtual void initialize() = 0;
     virtual void dropAll() = 0;
+    virtual std::string bucketIndexFilename(Hash const& hash) const = 0;
     virtual std::string const& getTmpDir() = 0;
     virtual TmpDirManager& getTmpDirManager() = 0;
     virtual std::string const& getBucketDir() const = 0;
     virtual BucketList& getBucketList() = 0;
+    virtual bool renameBucketDirFile(std::filesystem::path const& src,
+                                     std::filesystem::path const& dst) = 0;
 
     virtual medida::Timer& getMergeTimer() = 0;
 
@@ -248,11 +251,8 @@ class BucketManager : NonMovableOrCopyable
 
     // Assume state from `has` in BucketList: find and attach all buckets in
     // `has`, set current BL. Note: Does not restart merging
-    virtual void assumeState(HistoryArchiveState const& has) = 0;
-
-    // Restart BucketList Merges
-    virtual void restartMerges(HistoryArchiveState const& has,
-                               uint32_t maxProtocolVersion) = 0;
+    virtual void assumeState(HistoryArchiveState const& has,
+                             uint32_t maxProtocolVersion) = 0;
 
     virtual void shutdown() = 0;
 

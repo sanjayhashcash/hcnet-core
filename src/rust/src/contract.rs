@@ -5,25 +5,33 @@
 use crate::{
     log::partition::TX,
     rust_bridge::{
-        CxxBuf, CxxLedgerInfo, InvokeHostFunctionOutput, PreflightCallbacks,
-        PreflightHostFunctionOutput, RustBuf, XDRFileHash,
+        CxxBuf, CxxFeeConfiguration, CxxLedgerInfo, CxxTransactionResources, FeePair,
+        InvokeHostFunctionOutput, RustBuf, XDRFileHash,
     },
 };
-use cxx::{CxxVector, UniquePtr};
 use log::debug;
-use std::{cell::RefCell, fmt::Display, io::Cursor, panic, pin::Pin, rc::Rc};
+use soroban_env_host_curr::xdr::ContractCostParams;
+use std::{fmt::Display, io::Cursor, panic, rc::Rc};
 
-use soroban_env_host::{
+// This module (contract) is bound to _two separate locations_ in the module
+// tree: crate::lo::contract and crate::hi::contract, each of which has a (lo or
+// hi) version-specific definition of hcnet_env_host. We therefore
+// import it from our _parent_ module rather than from the crate root.
+use super::soroban_env_host::{
     budget::Budget,
-    events::{DebugError, DebugEvent, Events, HostEvent},
-    storage::{self, AccessType, Footprint, FootprintMap, SnapshotSource, Storage, StorageMap},
-    xdr,
-    xdr::{
-        AccountId, HostFunction, LedgerEntry, LedgerEntryData, LedgerFootprint, LedgerKey,
-        LedgerKeyAccount, LedgerKeyContractCode, LedgerKeyContractData, LedgerKeyTrustLine,
-        ReadXdr, ScHostContextErrorCode, ScUnknownErrorCode, WriteXdr, XDR_FILES_SHA256,
+    events::{Event, Events},
+    fees::{
+        compute_transaction_resource_fee as host_compute_transaction_resource_fee,
+        FeeConfiguration, TransactionResources,
     },
-    Host, HostError, LedgerInfo,
+    storage::{self, AccessType, Footprint, FootprintMap, Storage, StorageMap},
+    xdr::{
+        self, AccountId, ContractEvent, DiagnosticEvent, HostFunction, LedgerEntry,
+        LedgerEntryData, LedgerKey, LedgerKeyAccount, LedgerKeyContractCode, LedgerKeyContractData,
+        LedgerKeyTrustLine, ReadXdr, ScUnknownErrorCode, SorobanResources, WriteXdr,
+        XDR_FILES_SHA256,
+    },
+    DiagnosticLevel, Host, HostError, LedgerInfo,
 };
 use std::error::Error;
 
@@ -33,14 +41,43 @@ impl From<CxxLedgerInfo> for LedgerInfo {
             protocol_version: c.protocol_version,
             sequence_number: c.sequence_number,
             timestamp: c.timestamp,
-            network_passphrase: c.network_passphrase,
+            network_id: c.network_id.try_into().unwrap(),
             base_reserve: c.base_reserve,
         }
     }
 }
 
+impl From<CxxTransactionResources> for TransactionResources {
+    fn from(value: CxxTransactionResources) -> Self {
+        Self {
+            instructions: value.instructions,
+            read_entries: value.read_entries,
+            write_entries: value.write_entries,
+            read_bytes: value.read_bytes,
+            write_bytes: value.write_bytes,
+            metadata_size_bytes: value.metadata_size_bytes,
+            transaction_size_bytes: value.transaction_size_bytes,
+        }
+    }
+}
+
+impl From<CxxFeeConfiguration> for FeeConfiguration {
+    fn from(value: CxxFeeConfiguration) -> Self {
+        Self {
+            fee_per_instruction_increment: value.fee_per_instruction_increment,
+            fee_per_read_entry: value.fee_per_read_entry,
+            fee_per_write_entry: value.fee_per_write_entry,
+            fee_per_read_1kb: value.fee_per_read_1kb,
+            fee_per_write_1kb: value.fee_per_write_1kb,
+            fee_per_historical_1kb: value.fee_per_historical_1kb,
+            fee_per_metadata_1kb: value.fee_per_metadata_1kb,
+            fee_per_propagate_1kb: value.fee_per_propagate_1kb,
+        }
+    }
+}
+
 #[derive(Debug)]
-enum CoreHostError {
+pub(crate) enum CoreHostError {
     Host(HostError),
     General(&'static str),
 }
@@ -79,6 +116,17 @@ fn xdr_to_vec_u8<T: WriteXdr>(t: &T) -> Result<Vec<u8>, HostError> {
 fn xdr_to_rust_buf<T: WriteXdr>(t: &T) -> Result<RustBuf, HostError> {
     let data = xdr_to_vec_u8(t)?;
     Ok(RustBuf { data })
+}
+
+fn event_to_diagnostic_event_rust_buf(
+    ev: &ContractEvent,
+    failed_call: bool,
+) -> Result<RustBuf, HostError> {
+    let dev = DiagnosticEvent {
+        in_successful_contract_call: !failed_call,
+        event: ev.clone(),
+    };
+    xdr_to_rust_buf(&dev)
 }
 
 fn xdr_from_cxx_buf<T: ReadXdr>(buf: &CxxBuf) -> Result<T, HostError> {
@@ -126,13 +174,13 @@ fn populate_access_map(
 /// containing that map.
 fn build_storage_footprint_from_xdr(
     budget: &Budget,
-    footprint: &CxxBuf,
+    footprint: &xdr::LedgerFootprint,
 ) -> Result<Footprint, CoreHostError> {
     let xdr::LedgerFootprint {
         read_only,
         read_write,
-    } = xdr::LedgerFootprint::read_xdr(&mut Cursor::new(footprint.data.as_slice()))?;
-    let mut access = FootprintMap::new(budget)?;
+    } = footprint;
+    let mut access = FootprintMap::new()?;
 
     populate_access_map(
         &mut access,
@@ -178,7 +226,7 @@ fn build_storage_map_from_xdr_ledger_entries(
     footprint: &storage::Footprint,
     ledger_entries: &Vec<CxxBuf>,
 ) -> Result<StorageMap, CoreHostError> {
-    let mut map = StorageMap::new(budget)?;
+    let mut map = StorageMap::new()?;
     for buf in ledger_entries {
         let le = Rc::new(xdr_from_cxx_buf::<LedgerEntry>(buf)?);
         let key = Rc::new(ledger_entry_to_ledger_key(&le)?);
@@ -223,18 +271,44 @@ fn extract_contract_events(events: &Events) -> Result<Vec<RustBuf>, HostError> {
     events
         .0
         .iter()
-        .filter_map(|e| match e {
-            HostEvent::Contract(ce) => Some(xdr_to_rust_buf(ce)),
-            HostEvent::Debug(_) => None,
+        .filter_map(|e| {
+            if e.failed_call {
+                return None;
+            }
+
+            match &e.event {
+                Event::Contract(ce) => Some(xdr_to_rust_buf(ce)),
+                Event::Debug(_) => None,
+                Event::StructuredDebug(_) => None,
+            }
+        })
+        .collect()
+}
+
+// Note that this also includes Contract events so the ordering between
+// Contract and StructuredDebug events can be preserved. This does mean that
+// the Contract events will be duplicated in the meta if diagnostics are on - in
+// the hashed portion of the meta, and in the non-hashed diagnostic events.
+fn extract_diagnostic_events(events: &Events) -> Result<Vec<RustBuf>, HostError> {
+    events
+        .0
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::Contract(ce) => Some(event_to_diagnostic_event_rust_buf(&ce, e.failed_call)),
+            Event::Debug(_) => None,
+            Event::StructuredDebug(ce) => {
+                Some(event_to_diagnostic_event_rust_buf(&ce, e.failed_call))
+            }
         })
         .collect()
 }
 
 fn log_debug_events(events: &Events) {
     for e in events.0.iter() {
-        match e {
-            HostEvent::Contract(_) => (),
-            HostEvent::Debug(de) => debug!("contract HostEvent::Debug: {}", de),
+        match &e.event {
+            Event::Contract(_) => (),
+            Event::Debug(de) => debug!("contract HostEvent::Debug: {}", de),
+            Event::StructuredDebug(sd) => debug!("contract HostEvent::StructuredDebug: {:?}", sd),
         }
     }
 }
@@ -245,17 +319,19 @@ fn log_debug_events(events: &Events) {
 /// and returns the [`InvokeHostFunctionOutput`] that contains the host function
 /// result, events and modified ledger entries. Ledger entries not returned have
 /// been deleted.
-pub(crate) fn invoke_host_function(
-    hf_buf: &CxxBuf,
-    footprint_buf: &CxxBuf,
+pub(crate) fn invoke_host_functions(
+    enable_diagnostics: bool,
+    hf_bufs: &Vec<CxxBuf>,
+    resources_buf: &CxxBuf,
     source_account_buf: &CxxBuf,
     ledger_info: CxxLedgerInfo,
     ledger_entries: &Vec<CxxBuf>,
 ) -> Result<InvokeHostFunctionOutput, Box<dyn Error>> {
     let res = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        invoke_host_function_or_maybe_panic(
-            hf_buf,
-            footprint_buf,
+        invoke_host_functions_or_maybe_panic(
+            enable_diagnostics,
+            hf_bufs,
+            resources_buf,
             source_account_buf,
             ledger_info,
             ledger_entries,
@@ -267,231 +343,84 @@ pub(crate) fn invoke_host_function(
     }
 }
 
-fn invoke_host_function_or_maybe_panic(
-    hf_buf: &CxxBuf,
-    footprint_buf: &CxxBuf,
+fn invoke_host_functions_or_maybe_panic(
+    enable_diagnostics: bool,
+    hf_bufs: &Vec<CxxBuf>,
+    resources_buf: &CxxBuf,
     source_account_buf: &CxxBuf,
     ledger_info: CxxLedgerInfo,
     ledger_entries: &Vec<CxxBuf>,
 ) -> Result<InvokeHostFunctionOutput, Box<dyn Error>> {
-    let budget = Budget::default();
-    let hf = xdr_from_cxx_buf::<HostFunction>(&hf_buf)?;
+    let hfs = hf_bufs
+        .iter()
+        .map(|hf_buf| xdr_from_cxx_buf::<HostFunction>(&hf_buf))
+        .collect::<Result<Vec<HostFunction>, HostError>>()?;
     let source_account = xdr_from_cxx_buf::<AccountId>(&source_account_buf)?;
+    let resources = xdr_from_cxx_buf::<SorobanResources>(&resources_buf)?;
 
-    let footprint = build_storage_footprint_from_xdr(&budget, footprint_buf)?;
+    let budget = Budget::from_configs(
+        resources.instructions as u64,
+        ledger_info.memory_limit as u64,
+        xdr_from_cxx_buf::<ContractCostParams>(&ledger_info.cpu_cost_params)?,
+        xdr_from_cxx_buf::<ContractCostParams>(&ledger_info.mem_cost_params)?,
+    );
+    let footprint = build_storage_footprint_from_xdr(&budget, &resources.footprint)?;
     let map = build_storage_map_from_xdr_ledger_entries(&budget, &footprint, ledger_entries)?;
     let storage = Storage::with_enforcing_footprint_and_map(footprint, map);
     let host = Host::with_storage_and_budget(storage, budget);
     host.set_source_account(source_account);
     host.set_ledger_info(ledger_info.into());
+    if enable_diagnostics {
+        host.set_diagnostic_level(DiagnosticLevel::Debug);
+    }
 
-    debug!(
-        target: TX,
-        "invoking host function '{}'",
-        HostFunction::name(&hf)
-    );
-    let res = host.invoke_function(hf);
+    let res: Result<Vec<xdr::ScVal>, HostError> = host.invoke_functions(hfs);
     let (storage, budget, events) = host
         .try_finish()
         .map_err(|_h| CoreHostError::General("could not finalize host"))?;
     log_debug_events(&events);
-    let result_value = match res {
-        Ok(rv) => xdr_to_rust_buf(&rv)?,
+    let result_values = match res {
+        Ok(rv) => rv
+            .iter()
+            .map(|v| xdr_to_rust_buf(v))
+            .collect::<Result<Vec<RustBuf>, HostError>>()?,
         Err(err) => {
             debug!(target: TX, "invocation failed: {}", err);
-            return Err(err.into());
+            return Ok(InvokeHostFunctionOutput {
+                success: false,
+                result_values: vec![],
+                contract_events: vec![],
+                diagnostic_events: extract_diagnostic_events(&events)?,
+                modified_ledger_entries: vec![],
+                cpu_insns: budget.get_cpu_insns_count(),
+                mem_bytes: budget.get_mem_bytes_count(),
+            });
         }
     };
+
     let modified_ledger_entries =
         build_xdr_ledger_entries_from_storage_map(&storage.footprint, &storage.map, &budget)?;
     let contract_events = extract_contract_events(&events)?;
+    let diagnostic_events = extract_diagnostic_events(&events)?;
     Ok(InvokeHostFunctionOutput {
-        result_value,
+        success: true,
+        result_values,
         contract_events,
+        diagnostic_events,
         modified_ledger_entries,
         cpu_insns: budget.get_cpu_insns_count(),
         mem_bytes: budget.get_mem_bytes_count(),
     })
 }
 
-// Pfc here exists just to translate a mess of irrelevant ownership and access
-// quirks between UniquePtr<PreflightCallbacks>, Rc<dyn SnapshotSource> and
-// Pin<&mut PreflightCallbacks>. They're all pointers to the same thing (or
-// perhaps indirected through an Rc or RefCell) but unfortunately, as you know,
-// type systems.
-//
-// Pfc also carries a reference to a Host to allow us to record as debug events
-// any strings returned in exceptions thrown while running the callbacks. This
-// is awkward but it's the best we can do for mapping from the core error regime
-// to that of the Host.
-struct Pfc(
-    RefCell<Option<Host>>,
-    RefCell<UniquePtr<PreflightCallbacks>>,
-);
-
-impl Pfc {
-    fn with_cb<T, F>(&self, f: F) -> Result<T, HostError>
-    where
-        F: FnOnce(Pin<&mut PreflightCallbacks>) -> Result<T, ::cxx::Exception>,
-    {
-        let code = ScHostContextErrorCode::UnknownError;
-
-        if let Some(cb) = self.1.try_borrow_mut().map_err(|_| code)?.as_mut() {
-            f(cb).map_err(|exn| {
-                // Error propagation is relatively awkward here. We need to
-                // generate a `HostError`, which has no string, and we have a
-                // `cxx::Exception`, which only has a string. We therefore have
-                // a `Host` reference plumbed through here so that we can call
-                // `err` on it passing a `DebugError` carrying a copy of the
-                // string from the `cxx::Exception`. This will in turn record
-                // the string in the `Host` debug-event buffer and then generate
-                // a `HostError` carrying a snapshot of that buffer, which will
-                // hopefully make it back to users.
-                //
-                // NB: the `Host` reference in this function is only here to
-                // serve this purpose; it's not otherwise needed.
-                if let Ok(Some(host)) = self.0.try_borrow().map(|r| (*r).clone()) {
-                    let err = DebugError {
-                        event: DebugEvent::new().msg(exn.what().to_string()),
-                        status: code.into(),
-                    };
-                    host.err(err)
-                } else {
-                    code.into()
-                }
-            })
-        } else {
-            Err(code.into())
-        }
+pub(crate) fn compute_transaction_resource_fee(
+    tx_resources: CxxTransactionResources,
+    fee_config: CxxFeeConfiguration,
+) -> FeePair {
+    let (fee, refundable_fee) =
+        host_compute_transaction_resource_fee(&tx_resources.into(), &fee_config.into());
+    FeePair {
+        fee,
+        refundable_fee,
     }
-}
-
-impl SnapshotSource for Pfc {
-    fn get(&self, key: &LedgerKey) -> Result<LedgerEntry, HostError> {
-        let kv = xdr_to_vec_u8(key)?;
-        let lev = self.with_cb(|cb| cb.get_ledger_entry(&kv))?;
-        xdr_from_cxx_buf(&lev)
-    }
-
-    fn has(&self, key: &LedgerKey) -> Result<bool, HostError> {
-        let kv = xdr_to_vec_u8(key)?;
-        self.with_cb(|cb| cb.has_ledger_entry(&kv))
-    }
-}
-
-fn storage_footprint_to_ledger_footprint(
-    foot: &storage::Footprint,
-    budget: &Budget,
-) -> Result<LedgerFootprint, Box<dyn Error>> {
-    let mut read_only = Vec::new();
-    let mut read_write = Vec::new();
-    for (k, v) in foot.0.iter(budget)? {
-        match v {
-            AccessType::ReadOnly => read_only.push(k.clone()),
-            AccessType::ReadWrite => read_write.push(k.clone()),
-        }
-    }
-    let read_only_not_boxed: Vec<LedgerKey> = read_only.into_iter().map(|x| (*x).clone()).collect();
-    let read_write_not_boxed: Vec<LedgerKey> =
-        read_write.into_iter().map(|x| (*x).clone()).collect();
-    Ok(LedgerFootprint {
-        read_only: read_only_not_boxed.try_into()?,
-        read_write: read_write_not_boxed.try_into()?,
-    })
-}
-
-pub(crate) fn preflight_host_function(
-    hf_buf: &CxxVector<u8>,
-    source_account_buf: &CxxVector<u8>,
-    ledger_info: CxxLedgerInfo,
-    cb: UniquePtr<PreflightCallbacks>,
-) -> Result<PreflightHostFunctionOutput, Box<dyn Error>> {
-    let res = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        preflight_host_function_or_maybe_panic(hf_buf, source_account_buf, ledger_info, cb)
-    }));
-    match res {
-        Err(_) => Err(CoreHostError::General("contract host panicked").into()),
-        Ok(r) => r,
-    }
-}
-
-fn preflight_host_function_or_maybe_panic(
-    hf_buf: &CxxVector<u8>,
-    source_account_buf: &CxxVector<u8>,
-    ledger_info: CxxLedgerInfo,
-    cb: UniquePtr<PreflightCallbacks>,
-) -> Result<PreflightHostFunctionOutput, Box<dyn Error>> {
-    let hf = xdr_from_slice::<HostFunction>(hf_buf.as_slice())?;
-    let source_account = xdr_from_slice::<AccountId>(source_account_buf.as_slice())?;
-    let pfc = Rc::new(Pfc(RefCell::new(None), RefCell::new(cb)));
-    let src: Rc<dyn SnapshotSource> = pfc.clone() as Rc<dyn SnapshotSource>;
-    let storage = Storage::with_recording_footprint(src);
-    let budget = Budget::default();
-    let host = Host::with_storage_and_budget(storage, budget);
-
-    host.set_source_account(source_account);
-    host.set_ledger_info(ledger_info.into());
-
-    debug!(
-        target: TX,
-        "preflight execution of host function '{}'",
-        HostFunction::name(&hf)
-    );
-
-    // NB: this line creates cyclical ownership between Pfc and Host. We need to
-    // do this so that Pfc can access Host in `with_cb` above, but we must break
-    // that cycle below, otherwise both will leak.
-    *pfc.0.try_borrow_mut()? = Some(host.clone());
-
-    // Run the preflight.
-    let res = host.invoke_function(hf);
-
-    // Break cyclical ownership between Pfc and Host.
-    *pfc.0.try_borrow_mut()? = None;
-
-    // Recover, convert and return the storage footprint and other values to C++.
-    let (storage, budget, events) = host
-        .try_finish()
-        .map_err(|_| CoreHostError::General("could not finalize host"))?;
-    log_debug_events(&events);
-    let val = match res {
-        Ok(val) => val,
-        Err(err) => {
-            debug!(target: TX, "preflight failed: {}", err);
-            return Err(err.into());
-        }
-    };
-
-    let storage_footprint = xdr_to_rust_buf(&storage_footprint_to_ledger_footprint(
-        &storage.footprint,
-        &budget,
-    )?)?;
-    let contract_events = extract_contract_events(&events)?;
-    let result_value = xdr_to_rust_buf(&val)?;
-
-    Ok(PreflightHostFunctionOutput {
-        result_value,
-        contract_events,
-        storage_footprint,
-        cpu_insns: budget.get_cpu_insns_count(),
-        mem_bytes: budget.get_mem_bytes_count(),
-    })
-}
-
-// Accessors for test wasms, compiled into soroban-test-wasms crate.
-pub(crate) fn get_test_wasm_add_i32() -> Result<RustBuf, Box<dyn Error>> {
-    Ok(RustBuf {
-        data: soroban_test_wasms::ADD_I32.iter().cloned().collect(),
-    })
-}
-pub(crate) fn get_test_wasm_contract_data() -> Result<RustBuf, Box<dyn Error>> {
-    Ok(RustBuf {
-        data: soroban_test_wasms::CONTRACT_DATA.iter().cloned().collect(),
-    })
-}
-
-pub(crate) fn get_test_wasm_complex() -> Result<RustBuf, Box<dyn Error>> {
-    Ok(RustBuf {
-        data: soroban_test_wasms::COMPLEX.iter().cloned().collect(),
-    })
 }

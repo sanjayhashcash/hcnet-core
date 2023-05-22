@@ -5,12 +5,17 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "ledger/InternalLedgerEntry.h"
+#include "ledger/NetworkConfig.h"
+#include "main/Config.h"
 #include "overlay/HcnetXDR.h"
 #include "transactions/TransactionFrameBase.h"
 #include "transactions/TransactionMetaFrame.h"
 #include "util/GlobalChecks.h"
 #include "util/types.h"
 #include "xdr/Hcnet-ledger.h"
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+#include "rust/RustBridge.h"
+#endif
 
 #include <memory>
 #include <optional>
@@ -48,7 +53,9 @@ class TransactionFrame : public TransactionFrameBase
     TransactionEnvelope mEnvelope;
     TransactionResult mResult;
 #ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
-    xdr::xvector<ContractEvent> mEvents;
+    xdr::xvector<OperationEvents> mEvents;
+    xdr::xvector<OperationDiagnosticEvents> mDiagnosticEvents;
+    std::optional<FeePair> mSorobanResourceFee;
 #endif
 
     std::shared_ptr<InternalLedgerEntry const> mCachedAccount;
@@ -81,13 +88,15 @@ class TransactionFrame : public TransactionFrameBase
                               LedgerTxnEntry const& sourceAccount,
                               uint64_t lowerBoundCloseTimeOffset) const;
 
-    bool commonValidPreSeqNum(AbstractLedgerTxn& ltx, bool chargeFee,
+    bool commonValidPreSeqNum(Application& app, AbstractLedgerTxn& ltx,
+                              bool chargeFee,
                               uint64_t lowerBoundCloseTimeOffset,
                               uint64_t upperBoundCloseTimeOffset);
 
     virtual bool isBadSeq(LedgerTxnHeader const& header, int64_t seqNum) const;
 
-    ValidationType commonValid(SignatureChecker& signatureChecker,
+    ValidationType commonValid(Application& app,
+                               SignatureChecker& signatureChecker,
                                AbstractLedgerTxn& ltxOuter,
                                SequenceNumber current, bool applying,
                                bool chargeFee,
@@ -117,6 +126,11 @@ class TransactionFrame : public TransactionFrameBase
     std::optional<TimeBounds const> const getTimeBounds() const;
     std::optional<LedgerBounds const> const getLedgerBounds() const;
     bool extraSignersExist() const;
+
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    bool validateSorobanOpsConsistency() const;
+    bool validateSorobanResources(SorobanNetworkConfig const& config) const;
+#endif
 
   public:
     TransactionFrame(Hash const& networkID,
@@ -164,7 +178,8 @@ class TransactionFrame : public TransactionFrameBase
                       std::optional<int64_t> baseFee, bool applying);
 
 #ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
-    void pushContractEvent(ContractEvent const& evt);
+    void pushContractEvents(OperationEvents const& evts);
+    void pushDiagnosticEvents(OperationDiagnosticEvents const& evts);
 #endif
 
     TransactionEnvelope const& getEnvelope() const override;
@@ -178,6 +193,7 @@ class TransactionFrame : public TransactionFrameBase
     uint32_t getNumOperations() const override;
     std::vector<Operation> const& getRawOperations() const override;
 
+    int64_t getFullFee() const override;
     int64_t getFeeBid() const override;
 
     virtual int64_t getFee(LedgerHeader const& header,
@@ -194,13 +210,14 @@ class TransactionFrame : public TransactionFrameBase
                                  AccountID const& accountID);
     bool checkExtraSigners(SignatureChecker& signatureChecker);
 
-    bool checkValidWithOptionallyChargedFee(AbstractLedgerTxn& ltxOuter,
+    bool checkValidWithOptionallyChargedFee(Application& app,
+                                            AbstractLedgerTxn& ltxOuter,
                                             SequenceNumber current,
                                             bool chargeFee,
                                             uint64_t lowerBoundCloseTimeOffset,
                                             uint64_t upperBoundCloseTimeOffset);
-    bool checkValid(AbstractLedgerTxn& ltxOuter, SequenceNumber current,
-                    uint64_t lowerBoundCloseTimeOffset,
+    bool checkValid(Application& app, AbstractLedgerTxn& ltxOuter,
+                    SequenceNumber current, uint64_t lowerBoundCloseTimeOffset,
                     uint64_t upperBoundCloseTimeOffset) override;
 
     void
@@ -232,5 +249,14 @@ class TransactionFrame : public TransactionFrameBase
     uint32 getMinSeqLedgerGap() const override;
 
     bool hasDexOperations() const override;
+
+    bool isSoroban() const override;
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    SorobanResources const& sorobanResources() const override;
+    void
+    maybeComputeSorobanResourceFee(uint32_t protocolVersion,
+                                   SorobanNetworkConfig const& sorobanConfig,
+                                   Config const& cfg) override;
+#endif
 };
 }

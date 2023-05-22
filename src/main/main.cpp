@@ -5,7 +5,12 @@
 #include "crypto/CryptoError.h"
 #include "invariant/InvariantDoesNotHold.h"
 #include "ledger/NonSociRelatedException.h"
+#include "main/ApplicationUtils.h"
 #include "main/CommandLine.h"
+#include "main/Config.h"
+#include "main/HcnetCoreVersion.h"
+#include <regex>
+#include <stdexcept>
 #ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
 #include "rust/RustBridge.h"
 #endif
@@ -163,7 +168,7 @@ void
 checkXDRFileIdentity()
 {
     using namespace hcnet::rust_bridge;
-    rust::Vec<XDRFileHash> rustHashes = get_xdr_hashes();
+    rust::Vec<XDRFileHash> rustHashes = get_xdr_hashes().curr;
     for (auto const& cpp : hcnet::XDR_FILES_SHA256)
     {
         if (cpp.first.empty())
@@ -199,6 +204,37 @@ checkXDRFileIdentity()
                             cpp.first, cpp.second));
         }
     }
+
+    if (hcnet::XDR_FILES_SHA256.size() != rustHashes.size())
+    {
+        throw std::runtime_error(
+            fmt::format("Number of xdr hashes don't match between C++ and "
+                        "Rust. C++ size = {} and Rust size = {}.",
+                        hcnet::XDR_FILES_SHA256.size(), rustHashes.size()));
+    }
+}
+
+void
+checkHcnetCoreMajorVersionProtocolIdentity()
+{
+    auto vers =
+        hcnet::getHcnetCoreMajorReleaseVersion(HCNET_CORE_VERSION);
+    if (vers)
+    {
+        if (*vers != hcnet::Config::CURRENT_LEDGER_PROTOCOL_VERSION)
+        {
+            throw std::runtime_error(
+                fmt::format("hcnet-core version {} has major version {} but "
+                            "CURRENT_LEDGER_PROTOCOL_VERSION is {}",
+                            HCNET_CORE_VERSION, *vers,
+                            hcnet::Config::CURRENT_LEDGER_PROTOCOL_VERSION));
+        }
+    }
+    else
+    {
+        std::cerr << "Warning: running non-release version "
+                  << HCNET_CORE_VERSION << " of hcnet-core" << std::endl;
+    }
 }
 #endif
 
@@ -224,6 +260,9 @@ main(int argc, char* const* argv)
     randHash::initialize();
     xdr::marshaling_stack_limit = 1000;
 #ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+    checkHcnetCoreMajorVersionProtocolIdentity();
+    rust_bridge::check_lockfile_has_expected_dep_trees(
+        Config::CURRENT_LEDGER_PROTOCOL_VERSION);
     checkXDRFileIdentity();
 #endif
 

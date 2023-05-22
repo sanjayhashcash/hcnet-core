@@ -183,78 +183,112 @@ TEST_CASE("skip list", "[bucket][bucketmanager]")
 
 TEST_CASE_VERSIONS("bucketmanager ownership", "[bucket][bucketmanager]")
 {
-    VirtualClock clock;
-    Config cfg = getTestConfig();
-    cfg.MANUAL_CLOSE = false;
-    for_versions_with_differing_bucket_logic(cfg, [&](Config const& cfg) {
-        Application::pointer app = createTestApplication(clock, cfg);
+    auto test = [&](bool bucketListDB) {
+        VirtualClock clock;
+        Config cfg = getTestConfig();
+        cfg.MANUAL_CLOSE = false;
 
-        std::vector<LedgerEntry> live(
-            LedgerTestUtils::generateValidLedgerEntries(10));
-        std::vector<LedgerKey> dead{};
-
-        std::shared_ptr<Bucket> b1;
-
+        if (bucketListDB)
         {
-            std::shared_ptr<Bucket> b2 = Bucket::fresh(
-                app->getBucketManager(), getAppLedgerVersion(app), {}, live,
-                dead, /*countMergeEvents=*/true, clock.getIOContext(),
-                /*doFsync=*/true);
-            b1 = b2;
-
-            // Bucket is referenced by b1, b2 and the BucketManager.
-            CHECK(b1.use_count() == 3);
-
-            std::shared_ptr<Bucket> b3 = Bucket::fresh(
-                app->getBucketManager(), getAppLedgerVersion(app), {}, live,
-                dead, /*countMergeEvents=*/true, clock.getIOContext(),
-                /*doFsync=*/true);
-            std::shared_ptr<Bucket> b4 = Bucket::fresh(
-                app->getBucketManager(), getAppLedgerVersion(app), {}, live,
-                dead, /*countMergeEvents=*/true, clock.getIOContext(),
-                /*doFsync=*/true);
-            // Bucket is referenced by b1, b2, b3, b4 and the BucketManager.
-            CHECK(b1.use_count() == 5);
+            // Enable BucketListDB with persistent indexes
+            cfg.EXPERIMENTAL_BUCKETLIST_DB = true;
+            cfg.NODE_IS_VALIDATOR = false;
+            cfg.FORCE_SCP = false;
         }
 
-        // Bucket is now only referenced by b1 and the BucketManager.
-        CHECK(b1.use_count() == 2);
+        for_versions_with_differing_bucket_logic(cfg, [&](Config const& cfg) {
+            Application::pointer app = createTestApplication(clock, cfg);
 
-        // Drop bucket ourselves then purge bucketManager.
-        std::string filename = b1->getFilename().string();
-        CHECK(fs::exists(filename));
-        b1.reset();
-        app->getBucketManager().forgetUnreferencedBuckets();
-        CHECK(!fs::exists(filename));
+            std::vector<LedgerEntry> live(
+                LedgerTestUtils::generateValidUniqueLedgerEntries(10));
+            std::vector<LedgerKey> dead{};
 
-        // Try adding a bucket to the BucketManager's bucketlist
-        auto& bl = app->getBucketManager().getBucketList();
-        bl.addBatch(*app, 1, getAppLedgerVersion(app), {}, live, dead);
-        clearFutures(app, bl);
-        b1 = bl.getLevel(0).getCurr();
+            std::shared_ptr<Bucket> b1;
 
-        // Bucket should be referenced by bucketlist itself, BucketManager cache
-        // and b1.
-        CHECK(b1.use_count() == 3);
+            {
+                std::shared_ptr<Bucket> b2 = Bucket::fresh(
+                    app->getBucketManager(), getAppLedgerVersion(app), {}, live,
+                    dead, /*countMergeEvents=*/true, clock.getIOContext(),
+                    /*doFsync=*/true);
+                b1 = b2;
 
-        // This shouldn't change if we forget unreferenced buckets since it's
-        // referenced by bucketlist.
-        app->getBucketManager().forgetUnreferencedBuckets();
-        CHECK(b1.use_count() == 3);
+                // Bucket is referenced by b1, b2 and the BucketManager.
+                CHECK(b1.use_count() == 3);
 
-        // But if we mutate the curr bucket of the bucketlist, it should.
-        live[0] = LedgerTestUtils::generateValidLedgerEntry(10);
-        bl.addBatch(*app, 1, getAppLedgerVersion(app), {}, live, dead);
-        clearFutures(app, bl);
-        CHECK(b1.use_count() == 2);
+                std::shared_ptr<Bucket> b3 = Bucket::fresh(
+                    app->getBucketManager(), getAppLedgerVersion(app), {}, live,
+                    dead, /*countMergeEvents=*/true, clock.getIOContext(),
+                    /*doFsync=*/true);
+                std::shared_ptr<Bucket> b4 = Bucket::fresh(
+                    app->getBucketManager(), getAppLedgerVersion(app), {}, live,
+                    dead, /*countMergeEvents=*/true, clock.getIOContext(),
+                    /*doFsync=*/true);
+                // Bucket is referenced by b1, b2, b3, b4 and the BucketManager.
+                CHECK(b1.use_count() == 5);
+            }
 
-        // Drop it again.
-        filename = b1->getFilename().string();
-        CHECK(fs::exists(filename));
-        b1.reset();
-        app->getBucketManager().forgetUnreferencedBuckets();
-        CHECK(!fs::exists(filename));
-    });
+            // Take pointer by reference to not mess up use_count()
+            auto dropBucket = [&](std::shared_ptr<Bucket>& b) {
+                std::string filename = b->getFilename().string();
+                std::string indexFilename =
+                    app->getBucketManager().bucketIndexFilename(b->getHash());
+                CHECK(fs::exists(filename));
+                if (bucketListDB)
+                {
+                    CHECK(fs::exists(indexFilename));
+                }
+
+                b.reset();
+                app->getBucketManager().forgetUnreferencedBuckets();
+                CHECK(!fs::exists(filename));
+                CHECK(!fs::exists(indexFilename));
+            };
+
+            // Bucket is now only referenced by b1 and the BucketManager.
+            CHECK(b1.use_count() == 2);
+
+            // Drop bucket ourselves then purge bucketManager.
+            dropBucket(b1);
+
+            // Try adding a bucket to the BucketManager's bucketlist
+            auto& bl = app->getBucketManager().getBucketList();
+            bl.addBatch(*app, 1, getAppLedgerVersion(app), {}, live, dead);
+            clearFutures(app, bl);
+            b1 = bl.getLevel(0).getCurr();
+
+            // Bucket should be referenced by bucketlist itself, BucketManager
+            // cache and b1.
+            CHECK(b1.use_count() == 3);
+
+            // This shouldn't change if we forget unreferenced buckets since
+            // it's referenced by bucketlist.
+            app->getBucketManager().forgetUnreferencedBuckets();
+            CHECK(b1.use_count() == 3);
+
+            // But if we mutate the curr bucket of the bucketlist, it should.
+            live[0] = LedgerTestUtils::generateValidLedgerEntryWithExclusions({
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+                CONFIG_SETTING
+#endif
+            });
+            bl.addBatch(*app, 1, getAppLedgerVersion(app), {}, live, dead);
+            clearFutures(app, bl);
+            CHECK(b1.use_count() == 2);
+
+            // Drop it again.
+            dropBucket(b1);
+        });
+    };
+
+    SECTION("BucketListDB")
+    {
+        test(true);
+    }
+
+    SECTION("SQL")
+    {
+        test(false);
+    }
 }
 
 TEST_CASE("bucketmanager missing buckets fail", "[bucket][bucketmanager]")
@@ -274,7 +308,7 @@ TEST_CASE("bucketmanager missing buckets fail", "[bucket][bucketmanager]")
         {
             ++ledger;
             lm.setNextLedgerEntryBatchForBucketTesting(
-                {}, LedgerTestUtils::generateValidLedgerEntries(10), {});
+                {}, LedgerTestUtils::generateValidUniqueLedgerEntries(10), {});
             closeLedger(*app);
         } while (!BucketList::levelShouldSpill(ledger, level - 1));
         auto someBucket = bl.getLevel(1).getCurr();
@@ -315,7 +349,8 @@ TEST_CASE_VERSIONS("bucketmanager reattach to finished merge",
         {
             ++ledger;
             bl.addBatch(*app, ledger, vers, {},
-                        LedgerTestUtils::generateValidLedgerEntries(10), {});
+                        LedgerTestUtils::generateValidUniqueLedgerEntries(10),
+                        {});
             bm.forgetUnreferencedBuckets();
         } while (!BucketList::levelShouldSpill(ledger, level - 1));
 
@@ -398,7 +433,8 @@ TEST_CASE_VERSIONS("bucketmanager reattach to running merge",
             // between the main thread here and the background workers doing
             // the merges.
             bl.addBatch(*app, ledger, vers, {},
-                        LedgerTestUtils::generateValidLedgerEntries(100), {});
+                        LedgerTestUtils::generateValidUniqueLedgerEntries(100),
+                        {});
 
             bm.forgetUnreferencedBuckets();
 
@@ -456,7 +492,14 @@ TEST_CASE("bucketmanager do not leak empty-merge futures",
     // subsequent merges touch them, producing empty buckets.
     for (size_t i = 0; i < 128; ++i)
     {
-        auto entries = LedgerTestUtils::generateValidLedgerEntries(8);
+        auto entries =
+            LedgerTestUtils::generateValidLedgerEntriesWithExclusions(
+                {
+#ifdef ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION
+                    CONFIG_SETTING
+#endif
+                },
+                8);
         REQUIRE(entries.size() == 8);
         for (auto const& e : entries)
         {
@@ -530,7 +573,8 @@ TEST_CASE_VERSIONS(
             CLOG_INFO(Bucket, "finished-merge reattachments while queueing: {}",
                       ra);
             bl.addBatch(*app, lm.getLastClosedLedgerNum() + 1, vers, {},
-                        LedgerTestUtils::generateValidLedgerEntries(100), {});
+                        LedgerTestUtils::generateValidUniqueLedgerEntries(100),
+                        {});
             clock.crank(false);
             bm.forgetUnreferencedBuckets();
         }
@@ -1317,10 +1361,12 @@ TEST_CASE_VERSIONS("bucket persistence over app restart",
             cfg0.TESTING_UPGRADE_LEDGER_PROTOCOL_VERSION;
         cfg1.ARTIFICIALLY_PESSIMIZE_MERGES_FOR_TESTING = true;
 
+        auto batch_entries =
+            LedgerTestUtils::generateValidUniqueLedgerEntries(110);
         std::vector<std::vector<LedgerEntry>> batches;
-        for (uint32_t i = 0; i < 110; ++i)
+        for (auto const& batch_entry : batch_entries)
         {
-            batches.push_back(LedgerTestUtils::generateValidLedgerEntries(1));
+            batches.emplace_back().push_back(batch_entry);
         }
 
         // Inject a common object at the first batch we're going to run

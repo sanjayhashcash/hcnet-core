@@ -124,7 +124,7 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>USE_POSTGRES;ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION=1;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CEREAL_THREAD_SAFE;USE_POSTGRES;ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION=1;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>src;../../src;../../lib;../../lib/tracy;../../lib/spdlog/include;../../lib/libmedida/src;../../lib/soci/src/core;../../lib/autocheck/include;../../lib/cereal/include;../../lib/asio/asio/include;../../lib/xdrpp;../../lib/libsodium/src/libsodium/include;../../lib/fmt/include;../..;src/$(Configuration)/generated;../../lib/sqlite;c:\Program Files\PostgreSQL\15\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <MinimalRebuild>false</MinimalRebuild>
@@ -185,7 +185,7 @@ exit /b 0
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>USE_POSTGRES;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CEREAL_THREAD_SAFE;USE_POSTGRES;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>src;../../src;../../lib;../../lib/tracy;../../lib/spdlog/include;../../lib/libmedida/src;../../lib/soci/src/core;../../lib/autocheck/include;../../lib/cereal/include;../../lib/asio/asio/include;../../lib/xdrpp;../../lib/libsodium/src/libsodium/include;../../lib/fmt/include;../..;src/$(Configuration)/generated;../../lib/sqlite;c:\Program Files\PostgreSQL\15\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <MinimalRebuild>false</MinimalRebuild>
@@ -247,7 +247,7 @@ exit /b 0
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION=1;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CEREAL_THREAD_SAFE;ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION=1;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>src;../../src;../../lib;../../lib/tracy;../../lib/spdlog/include;../../lib/libmedida/src;../../lib/soci/src/core;../../lib/autocheck/include;../../lib/cereal/include;../../lib/asio/asio/include;../../lib/xdrpp;../../lib/libsodium/src/libsodium/include;../../lib/fmt/include;../..;src/$(Configuration)/generated;../../lib/sqlite;c:\Program Files\PostgreSQL\15\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <MinimalRebuild>false</MinimalRebuild>
@@ -313,7 +313,7 @@ exit /b 0
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>USE_POSTGRES;ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION=1;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CEREAL_THREAD_SAFE;USE_POSTGRES;ENABLE_NEXT_PROTOCOL_VERSION_UNSAFE_FOR_PRODUCTION=1;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>src;../../src;../../lib;../../lib/tracy;../../lib/spdlog/include;../../lib/libmedida/src;../../lib/soci/src/core;../../lib/autocheck/include;../../lib/cereal/include;../../lib/asio/asio/include;../../lib/xdrpp;../../lib/libsodium/src/libsodium/include;../../lib/fmt/include;../..;src/$(Configuration)/generated;../../lib/sqlite;c:\Program Files\PostgreSQL\15\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <BrowseInformation>false</BrowseInformation>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -374,7 +374,7 @@ exit /b 0
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>USE_POSTGRES;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>CEREAL_THREAD_SAFE;USE_POSTGRES;USE_SPDLOG;FMT_HEADER_ONLY=1;BUILD_TESTS;WIN32_LEAN_AND_MEAN;NOMINMAX;ASIO_STANDALONE;_WINSOCK_DEPRECATED_NO_WARNINGS;SODIUM_STATIC;ASIO_SEPARATE_COMPILATION;ASIO_ERROR_CATEGORY_NOEXCEPT=noexcept;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_NO_BROADCAST;TRACY_ONLY_LOCALHOST;USE_TRACY;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0601;WIN32;_MBCS;_CRT_NONSTDC_NO_DEPRECATE;YY_NO_UNISTD_H;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>src;../../src;../../lib;../../lib/tracy;../../lib/spdlog/include;../../lib/libmedida/src;../../lib/soci/src/core;../../lib/autocheck/include;../../lib/cereal/include;../../lib/asio/asio/include;../../lib/xdrpp;../../lib/libsodium/src/libsodium/include;../../lib/fmt/include;../..;src/$(Configuration)/generated;../../lib/sqlite;c:\Program Files\PostgreSQL\15\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <BrowseInformation>false</BrowseInformation>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -435,7 +435,7 @@ exit /b 0
     <ClCompile Include="..\..\lib\util\siphash.cpp" />
     <ClCompile Include="..\..\src\bucket\Bucket.cpp" />
     <ClCompile Include="..\..\src\bucket\BucketApplicator.cpp" />
-    <ClCompile Include="..\..\src\bucket\BucketIndex.cpp" />
+    <ClCompile Include="..\..\src\bucket\BucketIndexImpl.cpp" />
     <ClCompile Include="..\..\src\bucket\BucketInputIterator.cpp" />
     <ClCompile Include="..\..\src\bucket\BucketList.cpp" />
     <ClCompile Include="..\..\src\bucket\BucketManagerImpl.cpp" />
@@ -518,9 +518,12 @@ exit /b 0
     <ClCompile Include="..\..\src\ledger\LedgerTxnLiquidityPoolSQL.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerTxnConfigSettingSQL.cpp" />
     <ClCompile Include="..\..\src\ledger\LedgerTxnContractDataSQL.cpp" />
+    <ClCompile Include="..\..\src\ledger\NetworkConfig.cpp" />
     <ClCompile Include="..\..\src\ledger\test\LedgerCloseMetaStreamTests.cpp" />
     <ClCompile Include="..\..\src\main\Diagnostics.cpp" />
     <ClCompile Include="..\..\src\main\test\CommandHandlerTests.cpp" />
+    <ClCompile Include="..\..\src\overlay\FlowControl.cpp" />
+    <ClCompile Include="..\..\src\overlay\FlowControlCapacity.cpp" />
     <ClCompile Include="..\..\src\overlay\SurveyManager.cpp" />
     <ClCompile Include="..\..\src\overlay\SurveyMessageLimiter.cpp" />
     <ClCompile Include="..\..\src\overlay\test\SurveyManagerTests.cpp" />
@@ -879,6 +882,7 @@ exit /b 0
     <ClInclude Include="..\..\src\bucket\Bucket.h" />
     <ClInclude Include="..\..\src\bucket\BucketApplicator.h" />
     <ClInclude Include="..\..\src\bucket\BucketIndex.h" />
+    <ClInclude Include="..\..\src\bucket\BucketIndexImpl.h" />
     <ClInclude Include="..\..\src\bucket\BucketInputIterator.h" />
     <ClInclude Include="..\..\src\bucket\BucketList.h" />
     <ClInclude Include="..\..\src\bucket\BucketManager.h" />
@@ -947,8 +951,11 @@ exit /b 0
     <ClInclude Include="..\..\src\historywork\WriteVerifiedCheckpointHashesWork.h" />
     <ClInclude Include="..\..\src\ledger\InternalLedgerEntry.h" />
     <ClInclude Include="..\..\src\ledger\LedgerCloseMetaFrame.h" />
+    <ClInclude Include="..\..\src\ledger\NetworkConfig.h" />
     <ClInclude Include="..\..\src\ledger\NonSociRelatedException.h" />
     <ClInclude Include="..\..\src\main\Diagnostics.h" />
+    <ClInclude Include="..\..\src\overlay\FlowControl.h" />
+    <ClInclude Include="..\..\src\overlay\FlowControlCapacity.h" />
     <ClInclude Include="..\..\src\overlay\SurveyManager.h" />
     <ClInclude Include="..\..\src\overlay\SurveyMessageLimiter.h" />
     <ClInclude Include="..\..\src\test\Fuzzer.h" />
@@ -1196,6 +1203,7 @@ exit /b 0
     <ClInclude Include="src\$(Configuration)\generated\xdr\Hcnet-overlay.h" />
     <ClInclude Include="src\$(Configuration)\generated\xdr\Hcnet-SCP.h" />
     <ClInclude Include="src\$(Configuration)\generated\xdr\Hcnet-transaction.h" />
+    <ClInclude Include="src\$(Configuration)\generated\xdr\Hcnet-contract-config-setting.h" />
     <ClInclude Include="src\$(Configuration)\generated\xdr\Hcnet-types.h" />
   </ItemGroup>
   <ItemGroup>
@@ -1242,12 +1250,12 @@ exit /b 0
       <Command Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">sh ../../hash-xdrs.sh ../../src/protocol-curr &gt; src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Command>
       <Message Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">running hash-xdrs.sh</Message>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Outputs>
-      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">src/$(Configuration)/generated/xdr/Hcnet-overlay.h;src/$(Configuration)/generated/xdr/Hcnet-transaction.h;src/$(Configuration)/generated/xdr/Hcnet-ledger.h;src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h;src/$(Configuration)/generated/xdr/Hcnet-SCP.h;src/$(Configuration)/generated/xdr/Hcnet-types.h</AdditionalInputs>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">src/$(Configuration)/generated/xdr/Hcnet-overlay.h;src/$(Configuration)/generated/xdr/Hcnet-transaction.h;src/$(Configuration)/generated/xdr/Hcnet-ledger.h;src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h;src/$(Configuration)/generated/xdr/Hcnet-SCP.h;src/$(Configuration)/generated/xdr/Hcnet-types.h;src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h</AdditionalInputs>
       <OutputItemType Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">None</OutputItemType>
       <Command Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">sh ../../hash-xdrs.sh ../../src/protocol-next &gt; src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Command>
       <Message Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">running hash-xdrs.sh</Message>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Outputs>
-      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">src/$(Configuration)/generated/xdr/Hcnet-overlay.h;src/$(Configuration)/generated/xdr/Hcnet-transaction.h;src/$(Configuration)/generated/xdr/Hcnet-ledger.h;src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h;src/$(Configuration)/generated/xdr/Hcnet-SCP.h;src/$(Configuration)/generated/xdr/Hcnet-types.h</AdditionalInputs>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">src/$(Configuration)/generated/xdr/Hcnet-overlay.h;src/$(Configuration)/generated/xdr/Hcnet-transaction.h;src/$(Configuration)/generated/xdr/Hcnet-ledger.h;src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h;src/$(Configuration)/generated/xdr/Hcnet-SCP.h;src/$(Configuration)/generated/xdr/Hcnet-types.h;src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h</AdditionalInputs>
       <OutputItemType Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">None</OutputItemType>
       <Command Condition="'$(Configuration)|$(Platform)'=='DebugCurrV|x64'">sh ../../hash-xdrs.sh ../../src/protocol-curr &gt; src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Command>
       <Message Condition="'$(Configuration)|$(Platform)'=='DebugCurrV|x64'">running hash-xdrs.sh</Message>
@@ -1262,7 +1270,7 @@ exit /b 0
       <Command Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">sh ../../hash-xdrs.sh ../../src/protocol-next &gt; src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Command>
       <Message Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">running hash-xdrs.sh</Message>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">src/$(Configuration)/generated/xdr/XDRFilesSha256.cpp</Outputs>
-      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">src/$(Configuration)/generated/xdr/Hcnet-overlay.h;src/$(Configuration)/generated/xdr/Hcnet-transaction.h;src/$(Configuration)/generated/xdr/Hcnet-ledger.h;src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h;src/$(Configuration)/generated/xdr/Hcnet-SCP.h;src/$(Configuration)/generated/xdr/Hcnet-types.h</AdditionalInputs>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">src/$(Configuration)/generated/xdr/Hcnet-overlay.h;src/$(Configuration)/generated/xdr/Hcnet-transaction.h;src/$(Configuration)/generated/xdr/Hcnet-ledger.h;src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h;src/$(Configuration)/generated/xdr/Hcnet-SCP.h;src/$(Configuration)/generated/xdr/Hcnet-types.h;src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h</AdditionalInputs>
       <OutputItemType Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">None</OutputItemType>
     </CustomBuild>
     <None Include="..\..\INSTALL.md" />
@@ -1293,6 +1301,21 @@ exit /b 0
       <Message>running xdrc</Message>
       <Outputs>src/$(Configuration)/generated/xdr/Hcnet-contract.h</Outputs>
       <AdditionalInputs>src/$(Configuration)/generated/xdr/Hcnet-types.h</AdditionalInputs>
+      <OutputItemType>ClInclude</OutputItemType>
+    </CustomBuild>
+    <CustomBuild Include="..\..\src\protocol-next\xdr\Hcnet-contract-config-setting.x">
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='DebugCurrV|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseCurrV|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='DebugNoPostgres|x64'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">false</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='DebugNextV|x64'">$(SolutionDir)$(Platform)\Debug\xdrc.exe -hh -pedantic -o src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h ../../src/protocol-next/xdr/Hcnet-contract-config-setting.x</Command>
+      <Command Condition="'$(Configuration)|$(Platform)'=='DebugNoPostgres|x64'">$(SolutionDir)$(Platform)\Debug\xdrc.exe -hh -pedantic -o src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h ../../src/protocol-next/xdr/Hcnet-contract-config-setting.x</Command>
+      <Command Condition="'$(Configuration)|$(Platform)'=='ReleaseNextV|x64'">$(SolutionDir)$(Platform)\Release\xdrc.exe -hh -pedantic -o src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h ../../src/protocol-next/xdr/Hcnet-contract-config-setting.x</Command>
+      <Message>running xdrc</Message>
+      <Outputs>src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h</Outputs>
+      <AdditionalInputs>src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h</AdditionalInputs>
       <OutputItemType>ClInclude</OutputItemType>
     </CustomBuild>
     <CustomBuild Include="..\..\src\protocol-next\xdr\Hcnet-internal.x">
@@ -1384,6 +1407,7 @@ exit /b 0
       <Message>running xdrc</Message>
       <Outputs>src/$(Configuration)/generated/xdr/Hcnet-ledger-entries.h</Outputs>
       <AdditionalInputs>src/$(Configuration)/generated/xdr/Hcnet-types.h</AdditionalInputs>
+      <AdditionalInputs>src/$(Configuration)/generated/xdr/Hcnet-contract-config-setting.h</AdditionalInputs>
       <OutputItemType>ClInclude</OutputItemType>
     </CustomBuild>
     <CustomBuild Include="..\..\src\protocol-next\xdr\Hcnet-SCP.x">

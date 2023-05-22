@@ -54,6 +54,8 @@ class SurveyManager;
 class OverlayManager
 {
   public:
+    static int constexpr MIN_INBOUND_FACTOR = 3;
+
     static std::unique_ptr<OverlayManager> create(Application& app);
 
     // Drop all PeerRecords from the Database
@@ -158,9 +160,6 @@ class OverlayManager
 
     // Return number of authenticated peers
     virtual int getAuthenticatedPeersCount() const = 0;
-
-    // Return the percentage [0,100] of connections with pull-mode enabled
-    virtual int64_t getPullModePercentage() const = 0;
 
     // Attempt to connect to a peer identified by peer address.
     virtual void connectTo(PeerBareAddress const& address) = 0;

@@ -166,6 +166,14 @@ BucketManagerImpl::bucketFilename(Hash const& hash)
     return bucketFilename(binToHex(hash));
 }
 
+std::string
+BucketManagerImpl::bucketIndexFilename(Hash const& hash) const
+{
+    auto hashStr = binToHex(hash);
+    auto basename = "bucket-" + hashStr + ".index";
+    return getBucketDir() + "/" + basename;
+}
+
 std::string const&
 BucketManagerImpl::getTmpDir()
 {
@@ -354,16 +362,17 @@ BucketManagerImpl::incrMergeCounters(MergeCounters const& delta)
 }
 
 bool
-BucketManagerImpl::renameBucket(std::string const& src, std::string const& dst)
+BucketManagerImpl::renameBucketDirFile(std::filesystem::path const& src,
+                                       std::filesystem::path const& dst)
 {
     ZoneScoped;
     if (mApp.getConfig().DISABLE_XDR_FSYNC)
     {
-        return rename(src.c_str(), dst.c_str()) == 0;
+        return rename(src.string().c_str(), dst.string().c_str()) == 0;
     }
     else
     {
-        return fs::durableRename(src, dst, getBucketDir());
+        return fs::durableRename(src.string(), dst.string(), getBucketDir());
     }
 }
 
@@ -415,14 +424,14 @@ BucketManagerImpl::adoptFileAsBucket(std::string const& filename,
         std::string canonicalName = bucketFilename(hash);
         CLOG_DEBUG(Bucket, "Adopting bucket file {} as {}", filename,
                    canonicalName);
-        if (!renameBucket(filename, canonicalName))
+        if (!renameBucketDirFile(filename, canonicalName))
         {
             std::string err("Failed to rename bucket :");
             err += strerror(errno);
             // it seems there is a race condition with external systems
             // retry after sleeping for a second works around the problem
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (!renameBucket(filename, canonicalName))
+            if (!renameBucketDirFile(filename, canonicalName))
             {
                 // if rename fails again, surface the original error
                 throw std::runtime_error(err);
@@ -693,6 +702,10 @@ BucketManagerImpl::cleanupStaleFiles()
             // called again
             auto fullName = getBucketDir() + "/" + f;
             std::remove(fullName.c_str());
+
+            // GC index as well
+            auto indexFilename = bucketIndexFilename(hash);
+            std::remove(indexFilename.c_str());
         }
     }
 }
@@ -751,6 +764,8 @@ BucketManagerImpl::forgetUnreferencedBuckets()
                 std::filesystem::remove(filename);
                 auto gzfilename = filename.string() + ".gz";
                 std::remove(gzfilename.c_str());
+                auto indexFilename = bucketIndexFilename(j->second->getHash());
+                std::remove(indexFilename.c_str());
             }
 
             // Dropping this bucket means we'll no longer be able to
@@ -987,15 +1002,8 @@ BucketManagerImpl::checkForMissingBucketsFiles(HistoryArchiveState const& has)
 }
 
 void
-BucketManagerImpl::restartMerges(HistoryArchiveState const& has,
-                                 uint32_t maxProtocolVersion)
-{
-    mBucketList->restartMerges(mApp, maxProtocolVersion, has.currentLedger);
-    cleanupStaleFiles();
-}
-
-void
-BucketManagerImpl::assumeState(HistoryArchiveState const& has)
+BucketManagerImpl::assumeState(HistoryArchiveState const& has,
+                               uint32_t maxProtocolVersion)
 {
     ZoneScoped;
     releaseAssertOrThrow(mApp.getConfig().MODE_ENABLES_BUCKETLIST);
@@ -1010,10 +1018,38 @@ BucketManagerImpl::assumeState(HistoryArchiveState const& has)
                 "Missing bucket files while assuming saved BucketList state");
         }
 
+        auto const& nextFuture = has.currentBuckets.at(i).next;
+        std::shared_ptr<Bucket> nextBucket = nullptr;
+        if (nextFuture.hasOutputHash())
+        {
+            nextBucket =
+                getBucketByHash(hexToBin256(nextFuture.getOutputHash()));
+            if (!nextBucket)
+            {
+                throw std::runtime_error("Missing future bucket files while "
+                                         "assuming saved BucketList state");
+            }
+        }
+
+        // Buckets on the BucketList should always be indexed when BucketListDB
+        // enabled
+        if (mApp.getConfig().isUsingBucketListDB())
+        {
+            releaseAssert(curr->isEmpty() || curr->isIndexed());
+            releaseAssert(snap->isEmpty() || snap->isIndexed());
+            if (nextBucket)
+            {
+                releaseAssert(nextBucket->isEmpty() || nextBucket->isIndexed());
+            }
+        }
+
         mBucketList->getLevel(i).setCurr(curr);
         mBucketList->getLevel(i).setSnap(snap);
-        mBucketList->getLevel(i).setNext(has.currentBuckets.at(i).next);
+        mBucketList->getLevel(i).setNext(nextFuture);
     }
+
+    mBucketList->restartMerges(mApp, maxProtocolVersion, has.currentLedger);
+    cleanupStaleFiles();
 }
 
 void
