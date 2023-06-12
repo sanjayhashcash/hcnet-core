@@ -30,3 +30,4 @@ See [Contributing](./CONTRIBUTING.md)
 # Running tests
 
 See [running tests](./CONTRIBUTING.md#running-tests)
+Hello this is testnet redme
